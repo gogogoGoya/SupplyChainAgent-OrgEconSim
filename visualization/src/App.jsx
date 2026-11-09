@@ -30,6 +30,7 @@ import {cancelViewReads,clearDataSourceCache,getDataRequestState} from './utils/
 import { LATEST_RUN_ID, buildDataUrl, resolveDataRoot, resolveWorkspaceJobRoot, safeFetchJson } from './utils/dataSource';
 import { listAllArtifactRuns, listOperationsJobs } from './utils/operationsApi';
 import { buildQuantityView } from './utils/productEquivalent';
+import { getRunExperimentTag } from './utils/runNaming.mjs';
 
 const formatNumber = (value) => {
   const numeric = Number(value);
@@ -325,31 +326,6 @@ const getRunCategoryConfig = (categoryId) => (
 const getScenarioCategoryLabel = (runMeta) => getRunCategoryConfig(detectRunCategory(runMeta)).label;
 
 const hasScenarioAnalysisPage = (runMeta) => Boolean(detectScenarioPage(runMeta));
-
-const extractRunExperimentTag = (value) => {
-  const name = String(value || '').split('/').filter(Boolean).pop() || '';
-  if (!name) {
-    return '';
-  }
-  const workspaceJobMatch = name.match(
-    /^run_[A-Za-z0-9]+__started_\d{4}-\d{2}-\d{2}T\d{2}_\d{2}_\d{2}_(.+)$/
-  );
-  if (workspaceJobMatch?.[1]) {
-    return workspaceJobMatch[1];
-  }
-  const legacyMatch = name.match(/^run_\d{4}-\d{2}-\d{2}_\d{6}_(.+)$/);
-  return legacyMatch?.[1] || '';
-};
-
-const getRunExperimentTag = (...values) => {
-  for (const value of values) {
-    const tag = extractRunExperimentTag(value);
-    if (tag) {
-      return tag;
-    }
-  }
-  return '';
-};
 
 const formatExperimentTag = (tag) => String(tag || '').replace(/_/g, ' ');
 
@@ -2138,7 +2114,7 @@ function App() {
                   <div className="welcome-key-runs">
                     <div className="welcome-key-runs-header">
                       <strong>Key Experiment Tags</strong>
-                      <span>Runs with an experiment suffix after the timestamp are highlighted here.</span>
+                      <span>Runs with an experiment prefix or a suffix after the timestamp are highlighted here.</span>
                     </div>
                     <div className="welcome-key-run-list">
                       {filteredAvailableRuns

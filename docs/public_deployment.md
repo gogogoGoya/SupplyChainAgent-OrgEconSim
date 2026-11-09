@@ -2,6 +2,10 @@
 
 [Visitor/operator access](visitor_mode.md) · [Results interface](interface_and_artifacts.md) · [Storage](database.md)
 
+## Load the published paper dataset
+
+The [46-run release](https://github.com/gogogoGoya/SupplyChainAgent-OrgEconSim/releases/tag/data-v1.0.0) contains public result copies as `.7z` attachments. Follow [download and extraction](data_download.md) to place run directories under the selected publication root's `runs/` directory. These archives already have manifests and projections, so they do not need to be republished.
+
 ## Publish existing results
 
 Run from the repository root:
@@ -84,7 +88,7 @@ SUPPLY_CHAIN_RUNTIME_ROOT=/data/supplychain/runtime \
   bash scripts/start_public_server.sh
 ```
 
-The API serves the built viewer on port 8000. Use a reverse proxy with HTTPS and proxy `/` to that service. The publication and source folders can be read-only; the runtime folder must be writable for operations storage, logs, quarantine records, and download caches.
+The API serves the built viewer at `http://127.0.0.1:8000`; this route has no separate frontend on port 3000. The default bind address is local-only. Use a reverse proxy with HTTPS and proxy `/` to that service, or set `BACKEND_HOST` to the interface required by your deployment. Rebuild after frontend source changes; this script does not automatically rebuild. The publication and source folders can be read-only; the runtime folder must be writable for operations storage, logs, quarantine records, and download caches.
 
 | Setting | Purpose |
 | --- | --- |

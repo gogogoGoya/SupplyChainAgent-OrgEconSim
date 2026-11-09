@@ -14,7 +14,7 @@ A visitor deployment is the default. It does not load `scripts/.env`; existing h
 
 ## Browse without a model account
 
-Install the [dependencies](../README.md#quick-start), optionally import the compact result example, then start the platform:
+Install the [dependencies](../README.md#quick-start), then load [published release data](data_download.md) or import the compact example below. After loading data, start the platform:
 
 ```bash
 .venv/bin/python scripts/import_result_example.py
@@ -27,20 +27,28 @@ The example importer uses a new `fd4-review` destination and refuses to overwrit
 
 ## Enable experiment execution
 
-On your own installation:
+On your own installation, follow the full [model and operator setup](../README.md#agent-setup). The required order is:
 
-1. Install dependencies from the [README](../README.md#quick-start).
-2. For Agent conditions, copy `scripts/.env.example` to `scripts/.env` and configure your SDK-compatible model gateway, model ID, and credential. Run `bash scripts/check_agent_cli_env.sh` to check the resolved setup. Scripted conditions do not require model credentials.
-3. Explicitly enable operator mode and generate a separate access token:
+1. Install dependencies from the [README](../README.md#1-download-and-install).
+2. For Agent conditions, create `scripts/.env` from the example if needed and configure your SDK-compatible model service/gateway, model ID, and credential. Start an external gateway separately if your provider requires one. Scripted conditions can skip model configuration.
+3. Stop a visitor service using the same ports, then enable operator mode and generate a separate access token:
 
 ```bash
 export SUPPLY_CHAIN_PLATFORM_MODE=operator
-export SUPPLY_CHAIN_OPERATOR_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
-bash scripts/start_integrated_app.sh
+export SUPPLY_CHAIN_OPERATOR_TOKEN="$(.venv/bin/python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+printf 'Operator access token (copy into the browser): %s\n' "$SUPPLY_CHAIN_OPERATOR_TOKEN"
 ```
 
-4. Open **Experiment Operations**, enter the value of `SUPPLY_CHAIN_OPERATOR_TOKEN`, and select **Unlock controls**. Scenario cards now offer **Configure Startup**, and authorized job controls become available.
-5. Choose a [scenario guide](configuration.md#scenario-guide-index) or [FD experiment](experiments.md#fd1fd5-matched-ablation-design), review its configuration, and use **Run now**.
+4. For Agent conditions, run `PYTHON_BIN=.venv/bin/python bash scripts/check_agent_cli_env.sh` in this same terminal **after** the exports above. The diagnostic checks configuration and the local bundled CLI; it does not call the upstream model service.
+5. Start the platform using the exported operator settings:
+
+```bash
+SUPPLY_CHAIN_VIEWER_MODE=production PYTHON_BIN=.venv/bin/python \
+  bash scripts/start_integrated_app.sh
+```
+
+6. Open **Browse Experiment Designs** / **Experiment Operations**, enter the printed value of `SUPPLY_CHAIN_OPERATOR_TOKEN`, and select **Unlock controls**. Scenario cards now offer **Configure Startup**, and authorized job controls become available. The page remains read-only until unlocked.
+7. Choose a [scenario guide](configuration.md#scenario-guide-index) or [FD experiment](experiments.md#fd1fd5-matched-ablation-design), review its configuration, and use **Run now**.
 
 The access token authorizes control of this installation. It is distinct from a model API key, must contain at least 32 characters, and is held only in browser memory. Reloading the page clears it. **Lock experiment controls** discards the browser token immediately.
 
