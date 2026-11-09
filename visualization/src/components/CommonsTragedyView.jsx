@@ -1,3 +1,5 @@
+import {enlargeSvgChart} from '../utils/chartZoom.mjs';
+import LoadingState from './LoadingState';
 import React, { useEffect, useMemo, useState } from 'react';
 import { buildDataUrl, safeFetchJson } from '../utils/dataSource';
 
@@ -319,7 +321,7 @@ const LineSvgChart = ({
   return (
     <div className="commons-svg-chart-wrap">
       <Legend items={series} />
-      <svg className="commons-svg-chart" viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`} role="img">
+      <div className="svg-review-frame"><button type="button" className="svg-expand-control" onClick={event=>enlargeSvgChart(event.currentTarget.parentElement,event.currentTarget)}>Enlarge chart</button><svg className="commons-svg-chart" viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`} role="img">
         <Axis
           rows={rows}
           scale={scale}
@@ -347,7 +349,7 @@ const LineSvgChart = ({
             </g>
           );
         })}
-      </svg>
+      </svg></div>
     </div>
   );
 };
@@ -445,7 +447,7 @@ const AcquisitionSvgChart = ({ rows }) => {
           { name: 'Sustainable Limit', color: COMMONS_COLORS.sustainable },
         ]}
       />
-      <svg className="commons-svg-chart" viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`} role="img">
+      <div className="svg-review-frame"><button type="button" className="svg-expand-control" onClick={event=>enlargeSvgChart(event.currentTarget.parentElement,event.currentTarget)}>Enlarge chart</button><svg className="commons-svg-chart" viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`} role="img">
         <Axis rows={rows} scale={scale} />
         {rows.map((row, index) => {
           const x = helpers.x(index) - barWidth / 2;
@@ -476,7 +478,7 @@ const AcquisitionSvgChart = ({ rows }) => {
             />
           );
         })}
-      </svg>
+      </svg></div>
     </div>
   );
 };
@@ -498,7 +500,7 @@ const StackedEnterpriseSvgChart = ({ rows, enterpriseIds }) => {
   return (
     <div className="commons-svg-chart-wrap">
       <Legend items={enterpriseIds.map((id) => ({ name: id, color: ENTERPRISE_COLORS[id] || '#506f85' }))} />
-      <svg className="commons-svg-chart" viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`} role="img">
+      <div className="svg-review-frame"><button type="button" className="svg-expand-control" onClick={event=>enlargeSvgChart(event.currentTarget.parentElement,event.currentTarget)}>Enlarge chart</button><svg className="commons-svg-chart" viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`} role="img">
         <Axis rows={rows} scale={scale} />
         {rows.map((row, rowIndex) => {
           let stackedValue = 0;
@@ -522,7 +524,7 @@ const StackedEnterpriseSvgChart = ({ rows, enterpriseIds }) => {
             );
           });
         })}
-      </svg>
+      </svg></div>
     </div>
   );
 };
@@ -592,7 +594,7 @@ function CommonsTragedyView({
   const [productionErrorRows, setProductionErrorRows] = useState([]);
   const [runMeta, setRunMeta] = useState(null);
   const [finalObservers, setFinalObservers] = useState({});
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   const enterpriseIds = useMemo(() => {
@@ -723,7 +725,7 @@ function CommonsTragedyView({
   );
 
   if (loading) {
-    return <div className="commons-empty-state">Loading commons-tragedy experiment data...</div>;
+    return <LoadingState label="Loading commons-tragedy experiment data…" variant="chart"/>;
   }
 
   if (error) {

@@ -20,6 +20,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # Use absolute import based on the root directory
 from core.action_executor import ActionExecutor
+from core.execution_boundary import execute_business_action, assert_execution_ready, EXECUTION_PROTOCOL
 from enterprise.enterprise import Enterprise
 from config.simulation_preset_config import (
     DEFAULT_BEER_GAME_CUSTOMER_DELIVERY_LEAD_TIME,
@@ -361,6 +362,10 @@ class Controller:
         """Syncs the current running-level policy to the controller with registered enterprise."""
         self.runtime_injection_config = runtime_injection_config or {}
         self.config["runtime_injection_config"] = self.runtime_injection_config
+        seed = self.runtime_injection_config.get("random_seed")
+        if seed is not None and getattr(self, "_market_seed", None) != seed:
+            self.market_manager.random.seed(seed)
+            self._market_seed = seed
         for enterprise in getattr(self, "enterprises", {}).values():
             enterprise.runtime_injection_config = self.runtime_injection_config
     
@@ -402,6 +407,9 @@ class Controller:
 
     def restore_runtime_links_after_checkpoint(self):
         """Rebind runtime-only references removed from persisted checkpoints."""
+        if not hasattr(self.market_manager, "random"):
+            import random
+            self.market_manager.random = random.Random()
         if self.environment is not None:
             self.environment.set_controller(self)
         if self.message_manager is not None:
@@ -585,6 +593,7 @@ class Controller:
             step: Current time step
             Action lists for current steps
                 """
+        assert_execution_ready(self)
         if not actions or not isinstance(actions, list):
             return {
                 "day": self.time_manager.get_day(),
@@ -625,7 +634,8 @@ class Controller:
         for item in actions:
             eid = item.get("executor_id")
             dept = item.get("module_type")
-            grouped[eid][dept].append(item)
+            if eid != "controller":
+                grouped[eid][dept].append(item)
          # Maximum queue length found
         max_depth = max((len(dept_actions) 
                  for e in grouped.values() 
@@ -643,39 +653,20 @@ class Controller:
         # department_time = defaultdict(int)
         # last_elapsed_time = 0 
         for action_in_timeline in actions_by_timeline:
-            tasks = []
-            task_info = []  # To store mission-related information and solve variable domain issues
-            for enterprise_name, dept_dict in action_in_timeline.items():
-                for dept, action_info in dept_dict.items():
-                    action = action_info.get("action")
-                    enterprise = self.enterprises[enterprise_name]
-                    # Create a packing function with timeout
-                    async def create_timeout_task(enterprise, action, dept, tick, timeout=30.0):
-                        loop = asyncio.get_event_loop()
-                        try:
-                            # Add timeout for line tasks using wait_for
-                            result = await asyncio.wait_for(
-                                loop.run_in_executor(
-                                    None,
-                                    self.action_executor._call_department_functions,
-                                    enterprise,
-                                    action,
-                                    dept,
-                                    tick
-                                ),
-                                timeout=timeout
-                            )
-                            return result
-                        except asyncio.TimeoutError:
-                            return Exception(f"Enterprise {enterprise_name}, department {dept}, timed out after {timeout} seconds")
-                    
-                    action_name = action.get("action_name") if isinstance(action, dict) else None
-                    task = create_timeout_task(enterprise, action, dept, self.time_manager.get_tick())
-                    tasks.append(task)
-                    task_info.append((enterprise_name, dept, action_name))  # Save task information for abnormal processing
-            
-            results_in_line = await asyncio.gather(*tasks, return_exceptions=True)
-            
+            task_info = []
+            results_in_line = []
+            # Queue depth is preserved; ties commit in stable enterprise/department order.
+            # The HTTP session gate prevents concurrent workflows and checkpoints.
+            for enterprise_name, dept_dict in sorted(action_in_timeline.items()):
+                for dept, action_info in sorted(dept_dict.items()):
+                    action = action_info.get("action") or {}
+                    result = await execute_business_action(
+                        self, self.enterprises[enterprise_name], action, dept,
+                        self.time_manager.get_tick(),
+                    )
+                    results_in_line.append(result)
+                    task_info.append((enterprise_name, dept, action.get("action_name")))
+
             # Use task_info to handle anomalies and logs correctly
             normalized_results = []
             for i, result in enumerate(results_in_line):
@@ -742,6 +733,7 @@ class Controller:
         return {
             "day": self.time_manager.get_day(),
             "environment_result": [],
+            "execution_protocol": EXECUTION_PROTOCOL,
             "enterprise_results": flattened_results
         }
 

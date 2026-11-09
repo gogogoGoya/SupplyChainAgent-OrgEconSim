@@ -18,6 +18,7 @@ RUN_METADATA_SCHEMA_VERSION = "operations_run_metadata.v1"
 
 TERMINAL_STATUSES = {"completed", "failed", "stopped"}
 VALID_STATUSES = {
+    "batch_pending",
     "queued",
     "running",
     "stop_requested",
@@ -386,6 +387,20 @@ class OperationsService:
         completed_steps: int,
         last_complete_round: Optional[int],
     ) -> Dict[str, Any]:
+        job = self._require_job(job_id)
+        planned = job.get("planned_total_steps")
+        checkpoint = job.get("latest_checkpoint") or {}
+        invalid = (
+            int(completed_steps) <= 0
+            or (planned is not None and int(completed_steps) != int(planned))
+            or last_complete_round != int(completed_steps) - 1
+            or (checkpoint and int(checkpoint.get("completed_steps", -1)) != int(completed_steps))
+        )
+        if invalid:
+            return self.mark_failed(
+                job_id, completed_steps=completed_steps, last_complete_round=last_complete_round,
+                error="Incomplete execution: completed rounds, final sealed round and planned rounds do not agree",
+            )
         return self._finish_job(
             job_id,
             status="completed",
@@ -498,6 +513,11 @@ class OperationsService:
         except (TypeError, ValueError):
             return {"attempted": False, "reason": f"invalid process_pid: {pid}"}
 
+        from .process_health import process_identity
+        expected = job.get("process_identity")
+        actual = process_identity(pid_int)
+        if expected and actual and expected.get("start_ticks") != actual.get("start_ticks"):
+            return {"attempted": False, "terminated": False, "reason": "PID was reused; unrelated process left untouched"}
         result = {"attempted": True, "process_pid": pid_int, "terminated": False}
         try:
             os.kill(pid_int, 0)

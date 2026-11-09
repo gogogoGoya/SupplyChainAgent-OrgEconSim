@@ -18,6 +18,7 @@ const STATUS_LABELS = {
   success: 'Success',
   generated: 'Generated',
   empty: 'No Action',
+  unknown: 'Receipt unresolved',
 };
 
 const normalizeActions = (payload) => {
@@ -214,6 +215,9 @@ const SingleEnterpriseActionList = ({ company, currentDay = 0, dataRoot }) => {
           ...normalizeResultItems(preResult, 'failed'),
           ...normalizeResultItems(result, 'failed'),
           ...normalizeResultItems(marketSeedResult, 'failed'),
+          ...normalizeResultItems(preResult, 'error'),
+          ...normalizeResultItems(result, 'error'),
+          ...normalizeResultItems(marketSeedResult, 'error'),
         ];
         const errors = [
           ...flattenErrorMessages(error),
@@ -228,12 +232,15 @@ const SingleEnterpriseActionList = ({ company, currentDay = 0, dataRoot }) => {
           ...normalizeMessages(scriptedMessages, `scripted_${dept}`),
         ];
         const failed = errors.length > 0 || failedResults.length > 0 || audits.some((audit) => audit?.status === 'failed' || audit?.ok === false);
-        const succeeded = successResults.length > 0 || hasPayload(preResult) || hasPayload(result);
+        const succeeded = successResults.length > 0;
+        const receiptPresent = hasPayload(preResult) || hasPayload(result);
 
         return {
           department: dept,
           departmentLabel: DEPARTMENT_LABELS[dept] || dept,
-          status: failed ? 'failed' : succeeded ? 'success' : actions.length > 0 ? 'generated' : 'empty',
+          status: failed ? 'failed' : succeeded ? 'success' : receiptPresent && actions.length > 0 ? 'unknown' : actions.length > 0 ? 'generated' : 'empty',
+          rawReceipts: [preResult,result,marketSeedResult].filter(Boolean),
+          rawMessages: [normalMessages,scriptedMessages].filter(Boolean),
           actions,
           successResults,
           failedResults,
@@ -267,7 +274,7 @@ const SingleEnterpriseActionList = ({ company, currentDay = 0, dataRoot }) => {
     <aside className="single-action-panel">
       <div className="single-action-header">
         <span>Department Trace</span>
-        <strong>Turn {currentDay} Department Actions and Reasoning</strong>
+        <strong>Round {currentDay} Department Actions and Reasoning</strong>
       </div>
       <div className="single-action-list">
         {rows.map((row) => {
@@ -309,6 +316,7 @@ const SingleEnterpriseActionList = ({ company, currentDay = 0, dataRoot }) => {
 
               {expanded && (
                 <div className="single-action-detail-panel">
+                  <details className="review-raw-evidence"><summary>Full archived proposal and receipt data</summary><pre>{JSON.stringify({actions:row.actions,receipts:row.rawReceipts,messages:row.rawMessages,audits:row.audits},null,2)}</pre></details>
                   <Section title="Action Plan">
                     {row.actions.length > 0 ? (
                       row.actions.map((action, index) => (

@@ -1,3 +1,4 @@
+import LoadingState from './LoadingState';
 import React, { useEffect, useMemo, useState } from 'react';
 import { buildDataUrl, safeFetchJson } from '../utils/dataSource';
 import { convertQuantityByItem, getDisplayItemLabel, getQuantityColumnLabel } from '../utils/productEquivalent';
@@ -302,7 +303,7 @@ const DemandPropagationView = ({
   );
 
   if (loading) {
-    return <div className="loading">Loading demand-propagation trace...</div>;
+    return <LoadingState label="Loading demand-propagation trace…" variant="chart"/>;
   }
 
   return (
@@ -320,7 +321,7 @@ const DemandPropagationView = ({
             key={summary.day}
             className="demand-day-card"
           >
-            <div className="demand-day-title">Turn {summary.day}</div>
+            <div className="demand-day-title">Round {summary.day}</div>
             <div className="demand-day-metrics">
               <span>Signals {summary.signalCount}</span>
               <span>Sales {summary.sellSignalCount}</span>
@@ -343,7 +344,7 @@ const DemandPropagationView = ({
         <table className="demand-propagation-table">
           <thead>
             <tr>
-              <th>Turn</th>
+              <th>Round</th>
               <th>Enterprise</th>
               <th>Phase</th>
               <th>Link</th>

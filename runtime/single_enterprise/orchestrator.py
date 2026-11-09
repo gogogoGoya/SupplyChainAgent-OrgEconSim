@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 
 ROOT = Path(__file__).resolve().parents[2]
-AGENT_ROOT = ROOT / "agent"
+AGENT_ROOT = ROOT / 'agent'
 for value in (str(ROOT), str(AGENT_ROOT)):
     if value not in sys.path:
         sys.path.insert(0, value)
@@ -24,8 +24,10 @@ from agent.SessionRegistry import SessionRegistry  # noqa: E402
 from agent.static_utils import StaticUtils  # noqa: E402
 from agent.multi_tenant_utils import MultiTenantUtils  # noqa: E402
 from agent.GlobalDepartmentLockManager import GlobalDepartmentLockManager  # noqa: E402
+from agent.fd_experiment_runtime import record_handover  # noqa: E402
 
 from config.environment_config import EnvironmentConfig  # noqa: E402
+from core.model_failure import abort_on_fatal_model_error
 from config.integration_profiles import resolve_integration_profiles  # noqa: E402
 from config.simulation_preset_config import (  # noqa: E402
     DEFAULT_AGENT_MODEL_NAME_LIST,
@@ -155,6 +157,7 @@ class SingleEnterpriseSimulationManager:
         MultiTenantUtils.write_single_enterprise_chart_export(round_id)
 
         workflow_messages = await self.runtime.run_workflow(round_id)
+        await self.runtime.dispatch_firm_phase(round_id, "decision")
 
         StaticUtils.check_orders()
         MultiTenantUtils.save_exchange_info(round_id, "after_check_orders")
@@ -165,6 +168,7 @@ class SingleEnterpriseSimulationManager:
             round_id,
             observation_already_refreshed=True,
         )
+        await self.runtime.dispatch_firm_phase(round_id, "trade")
 
         StaticUtils.statistics_orders()
         MultiTenantUtils.save_exchange_info(round_id, "end_of_day")
@@ -632,6 +636,7 @@ class SingleEnterpriseSimulationManager:
         print("========== SINGLE ENTERPRISE CUSTOM PREWARM END ==========\n")
         return handoff_day
 
+    @abort_on_fatal_model_error
     async def run(
         self,
         max_step: Optional[int] = None,
@@ -747,6 +752,7 @@ class SingleEnterpriseSimulationManager:
             scenario_id=scenario_id,
         )
         if prewarm_completed_steps:
+            record_handover(self.workspace_dir, self.enterprise_spec.enterprise_id, scenario_config)
             workspace_run_meta.update(
                 {
                     "prewarm_status": "completed",

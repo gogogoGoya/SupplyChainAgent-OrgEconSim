@@ -1,5 +1,7 @@
+import LoadingState from './LoadingState';
+import {setReviewChart} from '../utils/chartReview';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import * as echarts from 'echarts';
+import * as echarts from '../utils/echartsRuntime';
 import { buildDataUrl, safeFetchJson } from '../utils/dataSource';
 
 const CHART_COLORS = {
@@ -696,7 +698,7 @@ function CobwebModelValidationView({
         return null;
       }
       const chart = echarts.init(ref.current);
-      chart.setOption(option);
+      setReviewChart(chart, option);
       return chart;
     }).filter(Boolean);
 
@@ -711,7 +713,7 @@ function CobwebModelValidationView({
   if (viewState.loading) {
     return (
       <div className="cobweb-page">
-        <div className="cobweb-empty-state">Loading cobweb-model validation data...</div>
+        <LoadingState label="Loading cobweb-model validation data…" variant="chart"/>
       </div>
     );
   }
@@ -915,7 +917,7 @@ function CobwebModelValidationView({
         </article>
 
         <article className="cobweb-chart-card wide">
-          <div className="cobweb-card-title">Per-Turn Evidence Audit</div>
+          <div className="cobweb-card-title">Per-Round Evidence Audit</div>
           <div className="cobweb-card-note">
             Each turn audits the supply source, controller plan, theoretical reference, direction alignment, and input filtering to verify the configured decision pathway.
           </div>
@@ -923,7 +925,7 @@ function CobwebModelValidationView({
             <table className="cobweb-table">
               <thead>
                 <tr>
-                  <th>Turn</th>
+                  <th>Round</th>
                   <th>Price</th>
                   <th>Market Supply</th>
                   <th>{summary.controllerLabel} Plan</th>

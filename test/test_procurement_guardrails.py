@@ -1758,7 +1758,7 @@ def test_single_case_staff_shortage_recovers_production_from_pass_after_hr_recru
         "quantity": 750,
         "daily_capacity": 750,
     }
-    assert "post-recruitment recovery" in normalized[0]["action_reason"]
+    assert "bounded PRODUCT_1 recovery plan" in normalized[0]["action_reason"]
 
 
 def test_single_case_agent_procurement_caps_purchase_to_top_tier_limit(
@@ -1948,7 +1948,7 @@ def test_single_case_material_shortage_blocks_repeated_covered_purchase(
 
     action = normalized[0]["action"]
     assert action["action_name"] == "action_pass"
-    assert "Do not repeat create_purchase_order" in normalized[0]["action_reason"]
+    assert "Do not duplicate create_purchase_order" in normalized[0]["action_reason"]
 
 
 def test_single_case_material_shortage_allows_purchase_after_prior_order_consumed(

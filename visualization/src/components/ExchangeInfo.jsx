@@ -1,3 +1,4 @@
+import LoadingState from './LoadingState';
 import React, { useEffect, useState } from 'react';
 import { buildDataUrl, safeFetchJson } from '../utils/dataSource';
 import { convertQuantityByItem, getDisplayItemLabel, getQuantityColumnLabel } from '../utils/productEquivalent';
@@ -13,7 +14,7 @@ const formatNumber = (value) => {
   return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(numeric);
 };
 
-const formatCurrency = (value) => `¥${formatNumber(value)}`;
+const formatCurrency = (value) => `SCU ${formatNumber(value)}`;
 
 const ExchangeInfo = ({ day, selectedExchangeId, onSelectExchange, dataRoot, quantityView }) => {
   const [exchangeData, setExchangeData] = useState(null);
@@ -49,7 +50,7 @@ const ExchangeInfo = ({ day, selectedExchangeId, onSelectExchange, dataRoot, qua
   };
 
   if (loading) {
-    return <div className="loading">Loading...</div>;
+    return <LoadingState label="Loading exchange records…" variant="compact"/>;
   }
 
   if (error) {
@@ -97,7 +98,7 @@ const ExchangeInfo = ({ day, selectedExchangeId, onSelectExchange, dataRoot, qua
         <h4>{title}</h4>
         {Object.entries(requestsByRound).sort(([a], [b]) => a - b).map(([round, roundRequests]) => (
           <div key={`round-${round}`} className="round-section">
-            <div className="round-header">Turn {round}</div>
+            <div className="round-header">Round {round}</div>
             {roundRequests.map((request) => (
               <div key={request.request_id} className="request-item">
                 <div className="request-mainline">
@@ -142,7 +143,7 @@ const ExchangeInfo = ({ day, selectedExchangeId, onSelectExchange, dataRoot, qua
         <h4>Proposals</h4>
         {Object.entries(proposalsByRound).sort(([a], [b]) => a - b).map(([round, roundProposals]) => (
           <div key={`proposal-round-${round}`} className="round-section">
-            <div className="round-header">Turn {round}</div>
+            <div className="round-header">Round {round}</div>
             {roundProposals.map((proposal) => (
               <div key={proposal.proposal_id} className="proposal-item">
                 <div className="proposal-mainline">
@@ -189,7 +190,7 @@ const ExchangeInfo = ({ day, selectedExchangeId, onSelectExchange, dataRoot, qua
         <h4>Final Orders</h4>
         {Object.entries(ordersByRound).sort(([a], [b]) => a - b).map(([round, roundOrders]) => (
           <div key={`order-round-${round}`} className="round-section">
-            <div className="round-header">Turn {round}</div>
+            <div className="round-header">Round {round}</div>
             {roundOrders.map((order) => (
               <div key={order.order_id} className="order-item">
                 <div className="order-mainline">

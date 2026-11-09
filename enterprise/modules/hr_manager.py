@@ -1105,6 +1105,8 @@ class HRManager(EnhancedBaseModule):
                 "recruitment_status": {  # Expected Fields for Observer
                     "pending": hr_summary["pending_recruitments"],
                     "total_recruited": len([r for r in self.recruitment_records if _is_onboarded_recruitment_status(r.status)]),
+                    "completed_recruitment_batches": sum(1 for r in self.recruitment_records if _is_onboarded_recruitment_status(r.status)),
+                    "recruited_people": sum(r.num_people for r in self.recruitment_records if _is_onboarded_recruitment_status(r.status)),
                     "pending_by_department": {
                         dept.value: count for dept, count in pending_by_department.items()
                     },

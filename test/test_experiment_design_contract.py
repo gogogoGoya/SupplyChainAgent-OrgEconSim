@@ -957,7 +957,7 @@ def test_cobweb_c3_analyst_uses_compact_non_prescriptive_input(tmp_path):
     assert compact["sales_state"]["order_status_counts"]["completed"] == 32
     assert len(compact["recent_history"]["latest_days"]) == 3
     assert spec.observation_path in prompt
-    assert "Do not read the raw observation_day32.txt" in prompt
+    assert "do not open raw observation_day32.txt" in prompt
     assert len(serialized) < len(json.dumps(raw_observation, ensure_ascii=False))
 
 

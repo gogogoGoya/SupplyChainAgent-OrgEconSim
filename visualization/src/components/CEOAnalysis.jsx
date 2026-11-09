@@ -1,38 +1,40 @@
+import LoadingState from './LoadingState';
 import React, { useState, useEffect } from 'react';
-import { buildDataUrl, safeFetchJson } from '../utils/dataSource';
+import { buildDataUrl, getDataRequestState, safeFetchJson } from '../utils/dataSource';
 
 const CEOAnalysis = ({ company, day, dataRoot }) => {
   const [analysis, setAnalysis] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [warmup, setWarmup] = useState(false);
 
   useEffect(() => {
-    loadCEOAnalysis();
+    let active = true;
+    const load = async () => {
+      setLoading(true); setError(null); setAnalysis(null); setWarmup(false);
+      const url = buildDataUrl(dataRoot, `enterprises/${company}/records/day${day}/analysis.json`);
+      try {
+        const [data, meta] = await Promise.all([
+          safeFetchJson(url), safeFetchJson(buildDataUrl(dataRoot, 'run_meta.json')),
+        ]);
+        if (!active) return;
+        setWarmup(day < Number(meta?.prewarm_rounds || 0));
+        if (!data && getDataRequestState(url).availability === 'failed_to_load') {
+          setError('The recorded CEO analysis could not be loaded.');
+        }
+        setAnalysis(data);
+      } catch (error) {
+        if (active) setError('The recorded CEO analysis could not be loaded: ' + error.message);
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    load();
+    return () => { active = false; };
   }, [company, day, dataRoot]);
 
-  const loadCEOAnalysis = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-
-      const data = (
-        await safeFetchJson(buildDataUrl(dataRoot, `enterprises/${company}/records/day${day}/analysis.json`))
-        || await safeFetchJson(buildDataUrl(dataRoot, `enterprises/${company}/analysis.json`))
-      );
-      if (!data) {
-        throw new Error('CEO analysis data is unavailable');
-      }
-      setAnalysis(data);
-    } catch (error) {
-      console.error('Failed to load CEO analysis data:', error);
-      setError('Failed to load CEO analysis data: ' + error.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   if (loading) {
-    return <div className="loading">Loading...</div>;
+    return <LoadingState label="Loading enterprise analysis…" variant="compact"/>;
   }
 
   if (error) {
@@ -40,7 +42,7 @@ const CEOAnalysis = ({ company, day, dataRoot }) => {
   }
 
   if (!analysis) {
-    return <div className="loading">No CEO analysis data available</div>;
+    return <div className="empty-state">{warmup ? 'Scripted warmup · ' : ''}No CEO analysis was published for R{day}.</div>;
   }
 
   return (

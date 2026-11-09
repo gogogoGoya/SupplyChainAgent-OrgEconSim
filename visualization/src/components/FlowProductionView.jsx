@@ -1,5 +1,8 @@
+import LoadingState from './LoadingState';
+import {setReviewChart} from '../utils/chartReview';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import * as echarts from 'echarts';
+import * as echarts from '../utils/echartsRuntime';
+import {clearReadCache} from '../utils/readClient.mjs';
 import { buildDataUrl, safeFetchJson } from '../utils/dataSource';
 import {
   convertQuantityByItem,
@@ -103,6 +106,7 @@ const FlowProductionView = ({
 }) => {
   const [flowRows, setFlowRows] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error,setError]=useState('');const [reload,setReload]=useState(0);const generation=useRef(0);
   const sankeyRef = useRef(null);
   const trendRef = useRef(null);
   const sankeyInstanceRef = useRef(null);
@@ -122,7 +126,9 @@ const FlowProductionView = ({
   );
 
   useEffect(() => {
-    loadFlowData();
+    const request=++generation.current;
+    loadFlowData(request).catch(error=>{if(request===generation.current){setError(error.message);setLoading(false);}});
+    return()=>{generation.current+=1;};
   }, [
     daysToLoad.join(','),
     effectiveDay,
@@ -131,9 +137,11 @@ const FlowProductionView = ({
     includeUpstreamExternalSupplierMode,
     includeDownstreamExternalMarketMode,
     flowMeta.companies.join(','),
+    reload,
   ]);
 
   useEffect(() => {
+    if(loading)return;
     renderSankey();
     renderTrend();
 
@@ -145,19 +153,17 @@ const FlowProductionView = ({
 
     return () => {
       window.removeEventListener('resize', handleResize);
+      sankeyInstanceRef.current?.dispose();trendInstanceRef.current?.dispose();
+      sankeyInstanceRef.current=null;trendInstanceRef.current=null;
     };
-  }, [flowRows, effectiveDay, flowMeta, includeUpstreamExternalSupplierMode, includeDownstreamExternalMarketMode]);
+  }, [loading,flowRows, effectiveDay, flowMeta, includeUpstreamExternalSupplierMode, includeDownstreamExternalMarketMode]);
 
-  useEffect(() => () => {
-    sankeyInstanceRef.current?.dispose();
-    trendInstanceRef.current?.dispose();
-  }, []);
-
-  const loadFlowData = async () => {
-    setLoading(true);
+  const loadFlowData = async (request) => {
+    setLoading(true);setError('');
     const rows = [];
 
     for (const day of daysToLoad) {
+      if(request!==generation.current)return;
       const [
         exchangeData,
         productionData,
@@ -215,6 +221,7 @@ const FlowProductionView = ({
       });
     }
 
+    if(request!==generation.current)return;
     setFlowRows(rows);
     setLoading(false);
   };
@@ -280,14 +287,21 @@ const FlowProductionView = ({
       });
     }
 
-    const nodeNames = [...new Set([
-      ...(includeUpstreamExternalSupplierMode ? ['External Upstream'] : []),
-      ...(includeDownstreamExternalMarketMode ? ['External Market'] : []),
-      ...flowMeta.companies.map((company) => flowMeta.companyNameMap[company] || company),
-      ...links.flatMap((link) => [link.source, link.target]),
-    ])];
+    if(links.length===0){
+      sankeyRef.current.setAttribute('role','img');
+      sankeyRef.current.setAttribute('aria-label',`No recorded flow in R${effectiveDay}`);
+      setReviewChart(sankeyInstanceRef.current,{
+        title:{text:`No recorded flow in R${effectiveDay}`,subtext:'No order or production quantities\nin the selected flow view.\nChoose another round in Round View.',left:'center',top:'middle',
+          itemGap:16,textStyle:{fontSize:15,lineHeight:24,color:'#475569'},subtextStyle:{fontSize:12,lineHeight:18,color:'#64748b'}},
+        series:[],
+      });
+      return;
+    }
+    sankeyRef.current.setAttribute('role','img');
+    sankeyRef.current.setAttribute('aria-label',`Order and production flow in R${effectiveDay}`);
+    const nodeNames=[...new Set(links.flatMap(link=>[link.source,link.target]))];
 
-    sankeyInstanceRef.current.setOption({
+    setReviewChart(sankeyInstanceRef.current, {
       tooltip: {
         trigger: 'item',
         formatter: (params) => {
@@ -326,7 +340,7 @@ const FlowProductionView = ({
     }
     trendInstanceRef.current = echarts.init(trendRef.current);
 
-    const days = flowRows.map((row) => `Turn ${row.day}`);
+    const days = flowRows.map((row) => `Round ${row.day}`);
     const exchangeSeries = flowMeta.exchangeEntries.map(({ exchangeId, label }) => ({
       name: label,
       type: 'bar',
@@ -354,7 +368,7 @@ const FlowProductionView = ({
       });
     }
 
-    trendInstanceRef.current.setOption({
+    setReviewChart(trendInstanceRef.current, {
       tooltip: { trigger: 'axis' },
       legend: {
         type: 'scroll',
@@ -384,8 +398,9 @@ const FlowProductionView = ({
     });
   };
 
+  if(error)return <section className="view-error" role="alert"><h3>Flow review unavailable</h3><p>{error}</p><button onClick={()=>{clearReadCache();setReload(value=>value+1);}}>Retry flow review</button></section>;
   if (loading) {
-    return <div className="loading">Loading flow and production data...</div>;
+    return <LoadingState label="Loading flow and production data…" variant="chart"/>;
   }
 
   const externalLabels = [
@@ -397,8 +412,8 @@ const FlowProductionView = ({
     <div className="flow-production-view">
       <div className="flow-chart-card">
         <div className="flow-card-header">
-          <strong>{currentDay === null ? 'Final-Turn Flow Snapshot' : 'Current-Turn Flow'}</strong>
-          <span>Turn {effectiveDay}</span>
+          <strong>{currentDay === null ? 'Final-Round Flow Snapshot' : 'Current-Round Flow'}</strong>
+          <span>Round {effectiveDay}</span>
         </div>
         <div className="flow-sankey-chart" ref={sankeyRef} />
       </div>

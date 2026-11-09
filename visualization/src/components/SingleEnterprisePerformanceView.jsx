@@ -1,6 +1,11 @@
+import LoadingState from './LoadingState';
+import {setReviewChart} from '../utils/chartReview';
+import { normalizeReviewState, englishDepartmentLabel } from '../utils/reviewMetrics.mjs';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import * as echarts from 'echarts';
+import * as echarts from '../utils/echartsRuntime';
 import { buildDataUrl, safeFetchJson } from '../utils/dataSource';
+import { getArtifactReview,getArtifactTrend } from '../utils/operationsApi';
+import {reviewLocation} from '../utils/reviewDisplay';
 import { getActionDisplayName, isActionPassAction } from '../utils/actionLabels';
 
 const DEPARTMENTS = ['finance', 'production', 'sales', 'inventory', 'procurement', 'hr'];
@@ -77,7 +82,7 @@ const uniqueSortedNumbers = (values) => Array.from(new Set(
   (values || []).map((value) => Number(value)).filter(Number.isFinite)
 )).sort((a, b) => a - b);
 
-const dayLabel = (day) => `Turn ${day}`;
+const dayLabel = (day) => `Round ${day}`;
 
 const formatMillionValue = (value) => `${(Number(value || 0) / 1000000).toFixed(2)}M`;
 
@@ -1361,7 +1366,7 @@ const buildOrderTrackingOption = (charts, availableDays) => {
           `Quantity: ${row.quantity || 0}`,
           `Amount: ${Number(row.total_amount || 0).toFixed(2)}`,
           `Phase: ${params.data[3]}`,
-          `Time: Turn ${params.data[1]} - Turn ${params.data[2]}`,
+          `Time: Round ${params.data[1]} - Round ${params.data[2]}`,
         ].join('<br/>');
       },
     },
@@ -1426,7 +1431,7 @@ const buildActionStatisticsOption = (charts, fallbackRows) => {
       axisPointer: { type: 'shadow' },
       formatter: (params) => {
         const dayKey = dayKeys[params[0]?.dataIndex];
-        let html = `<div style="font-weight: bold; margin-bottom: 5px;">Turn ${dayKey}</div>`;
+        let html = `<div style="font-weight: bold; margin-bottom: 5px;">Round ${dayKey}</div>`;
         params.forEach((param) => {
           const dept = departments.find((item) => (DEPARTMENT_LABELS[item] || item) === param.seriesName);
           const chartDetails = (actionData.details?.[dayKey]?.[dept] || []).filter((detail) => {
@@ -1472,7 +1477,7 @@ const buildActionStatisticsOption = (charts, fallbackRows) => {
     grid: { left: '4%', right: '4%', bottom: '5%', top: 82, containLabel: true },
     xAxis: {
       type: 'category',
-      data: dayKeys.map((dayKey) => `Turn ${dayKey}`),
+      data: dayKeys.map((dayKey) => `Round ${dayKey}`),
       name: 'Simulation Turn',
       axisLabel: { rotate: 35 },
     },
@@ -1504,11 +1509,12 @@ const renderActionDetails = (details = []) => {
 };
 
 const renderProductionDetails = (state) => {
+  state = normalizeReviewState(state, 'production');
   const productionLines = state.production_lines || {};
-  const lineRows = asArray(productionLines.details).slice(0, 8);
-  const planRows = flattenStatusBucket(state.production_plans).slice(0, 8);
+  const lineRows = asArray(productionLines.details);
+  const planRows = flattenStatusBucket(state.production_plans);
   const byStatus = productionLines.by_status || {};
-  const recipeRows = Object.entries(recipeMaterialsByProduct({ production: state })).slice(0, 8);
+  const recipeRows = Object.entries(recipeMaterialsByProduct({ production: state }));
   const recoverySummary = state.recovery_guard?.summary || {};
   const marginSummary = state.margin_guard?.summary || {};
   return (
@@ -1594,12 +1600,13 @@ const renderProductionDetails = (state) => {
 };
 
 const renderSalesDetails = (state) => {
-  const orders = flattenStatusBucket(state.sales_orders).slice(0, 10);
-  const markets = asArray(state.markets).slice(0, 8);
+  state = normalizeReviewState(state, 'sales');
+  const orders = flattenStatusBucket(state.sales_orders);
+  const markets = asArray(state.markets);
   const proposals = [
     ...asArray(state.proposals_list),
     ...asArray(state.proposal_history),
-  ].slice(0, 8);
+  ];
   const ordersSummary = state.orders_summary || {};
   const marketsSummary = state.markets_summary || {};
   const backlogBreakdown = state.backlog_breakdown || state.demand_backlog || {};
@@ -1611,26 +1618,21 @@ const renderSalesDetails = (state) => {
         { label: 'Completed Orders', value: formatNumber(state.sales_metrics?.completed_orders) },
         { label: 'Breached Orders', value: formatNumber(state.sales_metrics?.breached_orders) },
         { label: 'Sales Revenue', value: formatNumber(state.sales_metrics?.total_revenue) },
-        { label: 'Fulfillment Rate', value: formatNumber(toNumber(state.sales_metrics?.order_fulfillment_rate) * 100, '%') },
+        { label: 'Order Completion Rate', value: formatNumber(toNumber(state.sales_metrics?.order_fulfillment_rate) * 100, '%') },
+        { label: 'Quantity Fill Rate', value: state.review_fill_rate == null ? '-' : formatNumber(state.review_fill_rate * 100, '%') },
+        { label: 'Confirmed Backlog', value: formatNumber(state.service_level_summary?.confirmed_order_backlog_quantity ?? state.sales_metrics?.backlog_quantity) },
+        { label: 'Overdue Quantity', value: formatNumber(state.service_level_summary?.overdue_confirmed_order_quantity) },
         { label: 'Orders in Summary', value: formatNumber(ordersSummary.total) },
         { label: 'Active Markets', value: formatNumber(marketsSummary.active ?? marketsSummary.active_count) },
         { label: 'Market Coverage', value: formatNumber(toNumber(state.sales_metrics?.market_coverage_rate) * 100, '%') },
         { label: 'Pending Proposals', value: formatNumber(state.pending_proposals_count) },
       ])}
-      {Object.keys(backlogBreakdown).length > 0 && (
-        <div className="single-dept-section">
-          <h4>Demand and Backlog</h4>
-          <div className="single-dept-chip-list">
-            {Object.entries(backlogBreakdown).slice(0, 10).map(([key, value]) => (
-              <span key={key}>
-                {key}: {typeof value === 'object' ? formatNumber(value.backlog_quantity ?? value.quantity ?? value.total_quantity) : formatNumber(value)}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
+      {state.review_backlog.length > 0 && <div className="single-dept-section">
+        <h4>Demand and Backlog by Product</h4>
+        {state.review_backlog.map(row=><p key={row.product}>{row.product}: received {formatNumber(row.received_quantity)} · fulfilled {formatNumber(row.fulfilled_quantity)} · backlog {formatNumber(row.backlog_quantity)} · lost {formatNumber(row.lost_sales_quantity)}</p>)}
+      </div>}
       <div className="single-dept-section">
-        <h4>Sales Orders</h4>
+        <h4>Sales Orders · {orders.length} records</h4>
         {orders.length ? (
           <div className="single-dept-table orders">
             <span>Order</span><span>Status</span><span>Product</span><span>Quantity</span><span>Amount / Deadline</span>
@@ -1684,11 +1686,12 @@ const renderSalesDetails = (state) => {
 };
 
 const renderProcurementDetails = (state) => {
-  const orders = flattenStatusBucket(state.orders).slice(0, 10);
+  state = normalizeReviewState(state, 'procurement');
+  const orders = flattenStatusBucket(state.orders);
   const suppliers = [
     ...asArray(state.suppliers),
     ...asArray(state.suppliers_detail),
-  ].slice(0, 8);
+  ];
   const operationalSummary = state.operational_summary || {};
   const pendingByMaterial = operationalSummary.pending_by_material || state.replenishment?.pending_by_material || {};
   const inventoryPositions = operationalSummary.inventory_position_by_material || {};
@@ -1714,7 +1717,7 @@ const renderProcurementDetails = (state) => {
             {Array.from(new Set([
               ...Object.keys(pendingByMaterial),
               ...Object.keys(inventoryPositions),
-            ])).slice(0, 10).map((materialId) => {
+            ])).map((materialId) => {
               const row = inventoryPositions[materialId] || {};
               return (
                 <React.Fragment key={materialId}>
@@ -1764,7 +1767,8 @@ const renderProcurementDetails = (state) => {
 };
 
 const renderInventoryDetails = (state) => {
-  const items = (state.inventory_items || []).slice(0, 12);
+  state = normalizeReviewState(state, 'inventory');
+  const items = (state.inventory_items || []);
   const warehouseCapacity = toNumber(state.warehouse_capacity);
   const usedCapacity = toNumber(state.used_capacity);
   const metrics = state.inventory_metrics || {};
@@ -1775,7 +1779,7 @@ const renderInventoryDetails = (state) => {
         { label: 'Used Capacity', value: formatNumber(usedCapacity) },
         { label: 'Warehouse Utilization', value: formatNumber(toNumber(state.warehouse_utilization, warehouseCapacity > 0 ? usedCapacity / warehouseCapacity : 0) * 100, '%') },
         { label: 'Inventory Item Types', value: formatNumber(items.length) },
-        { label: 'Total Inventory', value: formatNumber(state.total_inventory_su ?? state.total_inventory) },
+        { label: 'Inventory Item Units (Unconverted)', value: formatNumber(state.total_inventory_su ?? state.total_inventory) },
         { label: 'Total Inventory Value', value: formatNumber(state.total_value ?? metrics.total_value) },
         { label: 'Operating Costs', value: formatNumber(state.total_operating_cost) },
         { label: 'Maintenance Costs', value: formatNumber(state.total_maintenance_cost) },
@@ -1803,9 +1807,10 @@ const renderInventoryDetails = (state) => {
 };
 
 const renderHrDetails = (state) => {
+  state = normalizeReviewState(state, 'hr');
   const staffing = Object.entries(state.department_staffing || {});
   const recruitmentStatus = state.recruitment_status || {};
-  const history = (recruitmentStatus.recruitment_history || []).slice(-8).reverse();
+  const history = (recruitmentStatus.recruitment_history || []).slice().reverse();
   return (
     <>
       {renderValueList([
@@ -1813,7 +1818,8 @@ const renderHrDetails = (state) => {
         { label: 'Total Human-Resource Cost', value: formatNumber(state.total_human_cost) },
         { label: 'Salary Cost', value: formatNumber(state.salary_cost_total) },
         { label: 'Recruitment Cost', value: formatNumber(state.recruit_cost_total) },
-        { label: 'Cumulative Recruits', value: formatNumber(recruitmentStatus.total_recruited) },
+        { label: 'Completed Recruitment Batches', value: formatNumber(recruitmentStatus.completed_recruitment_batches) },
+        { label: 'Onboarded People', value: formatNumber(recruitmentStatus.recruited_people) },
         { label: 'Pending Onboarding Records', value: formatNumber((recruitmentStatus.pending || []).length) },
         { label: 'Staffing Relaxation', value: state.staffing_relaxation ? 'Enabled' : 'Disabled' },
       ])}
@@ -1824,7 +1830,7 @@ const renderHrDetails = (state) => {
             <span>Department</span><span>Employees</span><span>Available</span><span>Allocated</span><span>Pending Recruits</span>
             {staffing.map(([code, row]) => (
               <React.Fragment key={code}>
-                <strong>{row.label || code}</strong>
+                <strong>{englishDepartmentLabel(row.label || code)}</strong>
                 <em>{formatNumber(row.count)}</em>
                 <em>{formatNumber(row.available)}</em>
                 <em>{formatNumber(row.allocated)}</em>
@@ -1838,11 +1844,11 @@ const renderHrDetails = (state) => {
         <h4>Recruitment Records</h4>
         {history.length ? (
           <div className="single-dept-table compact">
-            <span>Record</span><span>Department</span><span>People</span><span>Completion Turn</span>
+            <span>Record</span><span>Department</span><span>People</span><span>Completion Round</span>
             {history.map((record, index) => (
               <React.Fragment key={record.record_id || index}>
                 <strong>{record.record_id || `REC ${index + 1}`}</strong>
-                <em>{record.department || '-'}</em>
+                <em>{englishDepartmentLabel(record.department || '-')}</em>
                 <em>{formatNumber(record.num_people)}</em>
                 <em>{record.complete_time ?? '-'}</em>
               </React.Fragment>
@@ -1867,8 +1873,8 @@ const renderFinanceDetails = (state) => (
       { label: 'Total Cost', value: formatNumber(state.total_cost) },
       { label: 'Net Profit', value: formatNumber(state.financial_indicators?.net_profit) },
       { label: 'Gross Profit', value: formatNumber(state.financial_indicators?.gross_profit) },
-      { label: 'Net Profit Margin', value: formatNumber(toNumber(state.financial_indicators?.net_profit_rate) * 100, '%') },
-      { label: 'Gross Profit Margin', value: formatNumber(toNumber(state.financial_indicators?.gross_profit_rate) * 100, '%') },
+      { label: 'Net Profit Margin', value: formatNumber(toNumber(state.financial_indicators?.net_profit_rate), '%') },
+      { label: 'Gross Profit Margin', value: formatNumber(toNumber(state.financial_indicators?.gross_profit_rate), '%') },
     ])}
   </>
 );
@@ -1908,6 +1914,7 @@ const SingleEnterprisePerformanceView = ({
 }) => {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError,setLoadError]=useState('');const [reload,setReload]=useState(0);
   const [trendCharts, setTrendCharts] = useState(null);
   const [snapshotCharts, setSnapshotCharts] = useState(null);
   const [selectedDepartment, setSelectedDepartment] = useState('production');
@@ -1940,7 +1947,18 @@ const SingleEnterprisePerformanceView = ({
         setLoading(false);
         return;
       }
-      setLoading(true);
+      setLoading(true);setLoadError('');
+      const {source,name}=reviewLocation(dataRoot);
+      const trendResult=await getArtifactTrend(source,name,company,{start:daysToLoad[0],end:currentDay,forceRefresh:reload>0});
+      if(trendResult.error&&trendResult.status!==404)throw new Error(trendResult.error);
+      if(trendResult.data&&!['available','missing','not_recorded','not_published'].includes(trendResult.data.availability))throw new Error('Enterprise trends are invalid or changed. Republish this archive.');
+      if(trendResult.data?.availability==='available'){
+        const snapshot=await getArtifactReview(source,name,company,currentDay);
+        const projectedRows=trendResult.data.rows.map(row=>({...row.series,
+          departmentStates:row.round===currentDay?(snapshot.data?.states||{}):{}}));
+        if(!cancelled){setRows(projectedRows);setLoading(false);}
+        return;
+      }
       const nextRows = await Promise.all(daysToLoad.map(async (day) => {
         const [finance, production, sales, inventory, procurement, hr, observation] = await Promise.all([
           safeFetchJson(buildDataUrl(dataRoot, `enterprises/${company}/department/finance/day${day}/finance.json`)),
@@ -1978,7 +1996,7 @@ const SingleEnterprisePerformanceView = ({
           actionCounts[dept] = rawActions.length;
           actionDetails[dept] = rawActions.map((item) => ({
             actionType: getActionNameFromEntry(item) || 'Unknown Action',
-            success: true,
+            success: null,
             message: item.action_reason || item.decision_source || 'Read from Action File',
           }));
           errorCounts[dept] = (
@@ -2000,7 +2018,7 @@ const SingleEnterprisePerformanceView = ({
 
         return {
           day,
-          dayLabel: `Turn ${day}`,
+          dayLabel: `Round ${day}`,
           cash: toNumber(financeState.cash, null),
           revenue: toNumber(financeState.total_revenue, null),
           cost: toNumber(financeState.total_cost, null),
@@ -2030,11 +2048,11 @@ const SingleEnterprisePerformanceView = ({
         setLoading(false);
       }
     };
-    loadRows();
+    loadRows().catch(error=>{if(!cancelled){setLoadError(error.message);setLoading(false);}});
     return () => {
       cancelled = true;
     };
-  }, [company, dataRoot, daysToLoad.join(',')]);
+  }, [company, dataRoot, currentDay, daysToLoad.join(','),reload]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2112,7 +2130,7 @@ const SingleEnterprisePerformanceView = ({
         return null;
       }
       const chart = echarts.init(ref.current);
-      chart.setOption(enhanceChartOption(option));
+      setReviewChart(chart, enhanceChartOption(option));
       chartRefs.current.push(chart);
       return chart;
     };
@@ -2164,12 +2182,13 @@ const SingleEnterprisePerformanceView = ({
     };
   }, [rows, loading, trendCharts, snapshotCharts, viewMode, currentDay, availableDays.join(',')]);
 
+  if(loadError)return <section className="view-error" role="alert"><h3>Enterprise review unavailable</h3><p>{loadError}</p><button onClick={()=>setReload(v=>v+1)}>Retry enterprise review</button></section>;
   if (loading) {
-    return <div className="loading">Loading enterprise performance charts...</div>;
+    return <LoadingState label="Loading enterprise performance charts…" variant="chart"/>;
   }
 
   if (!rows.length) {
-    return null;
+    return <div className="empty-state">No operating snapshots are available for this selection.</div>;
   }
 
   const latest = rows[rows.length - 1] || {};
@@ -2182,13 +2201,13 @@ const SingleEnterprisePerformanceView = ({
       : `${Number(value).toLocaleString('en-US', { maximumFractionDigits: 2 })}${suffix}`
   );
   const snapshotCards = [
-    { label: 'Current Turn', value: `Turn ${latest.day ?? currentDay}` },
+    { label: 'Current Turn', value: `Round ${latest.day ?? currentDay}` },
     { label: 'Cash Balance', value: formatMetric(latest.cash) },
     { label: 'Net Profit', value: formatMetric(latest.netProfit) },
     { label: 'Production Output', value: formatMetric(latest.production) },
     { label: 'Sales Orders', value: formatMetric(latest.salesOrders) },
     { label: 'Procurement Orders', value: formatMetric(latest.procurementOrders) },
-    { label: 'Total Inventory', value: formatMetric(latest.inventoryQuantity) },
+    { label: 'Inventory Item Units (Unconverted)', value: formatMetric(latest.inventoryQuantity) },
     {
       label: 'Warehouse Utilization',
       value: latest.warehouseUtilization === null || latest.warehouseUtilization === undefined
@@ -2210,8 +2229,8 @@ const SingleEnterprisePerformanceView = ({
     <section className="single-performance-panel">
       <div className="single-performance-header">
         <div>
-          <span>Single Enterprise Performance</span>
-          <strong>{activeViewMode === 'trend' ? 'End-to-End Trend Analysis' : 'Turn-Level Operating State'}</strong>
+          <span>Single Enterprise Performance · state snapshots and decision evidence</span>
+          <strong>{activeViewMode === 'trend' ? 'End-to-End Trend Analysis' : 'Round-Level Operating State'}</strong>
         </div>
         <div className="single-performance-header-actions">
           <div className="single-performance-toggle">
@@ -2227,7 +2246,7 @@ const SingleEnterprisePerformanceView = ({
               className={activeViewMode === 'snapshot' ? 'active' : ''}
               onClick={() => onViewModeChange?.('snapshot')}
             >
-              Turn-Level State
+              Round-Level State
             </button>
           </div>
         </div>
@@ -2260,7 +2279,7 @@ const SingleEnterprisePerformanceView = ({
                     <span>{actionCount} Actions</span>
                     <span className={errorCount > 0 ? 'danger' : ''}>{errorCount} Errors</span>
                     <em className={errorCount > 0 ? 'failed' : 'success'}>
-                      {errorCount > 0 ? 'Checked' : 'Normal'}
+                      {errorCount > 0 ? 'Execution issues' : actionCount > 0 ? 'Actions recorded' : 'No actions recorded'}
                     </em>
                   </button>
                 );
@@ -2273,7 +2292,7 @@ const SingleEnterprisePerformanceView = ({
                   <span>Details</span>
                   <strong>{DEPARTMENT_LABELS[activeDepartment] || activeDepartment}</strong>
                 </div>
-                <small>{`Turn ${latest.day ?? currentDay}`}</small>
+                <small>{`Round ${latest.day ?? currentDay}`}</small>
               </header>
               <div className="single-dept-section">
                 <h4>Current Round Actions</h4>
@@ -2315,7 +2334,7 @@ const SingleEnterprisePerformanceView = ({
             </div>
           ) : (
             <article className="single-performance-empty">
-              <h3>Turn-Level Projection Charts</h3>
+              <h3>Round-Level Projection Charts</h3>
               <p>No projection-chart data were recorded for the current turn.</p>
             </article>
           )}

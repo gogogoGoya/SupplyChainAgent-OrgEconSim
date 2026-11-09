@@ -284,21 +284,38 @@ class OperationsSimulationRunner:
             }
             if resume_context:
                 run_kwargs["resume_context"] = resume_context
-            result = manager.run(
-                **run_kwargs,
-            )
-            if inspect.isawaitable(result):
-                result = await result
-        result = result or {}
+            try:
+                result = manager.run(**run_kwargs)
+                if inspect.isawaitable(result):
+                    result = await result
+            finally:
+                import json
+                meta_path = context.workspace_dir / "run_meta.json"
+                if meta_path.is_file():
+                    metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+                    metadata["execution_provenance"] = job.get("execution_provenance")
+                    metadata["execution_protocol"] = "ordered_business_commit.v1"
+                    temporary = meta_path.with_suffix(".provenance.tmp")
+                    temporary.write_text(json.dumps(metadata,ensure_ascii=False,indent=2),encoding="utf-8")
+                    temporary.replace(meta_path)
+                if self.manager_factory is default_simulation_manager_factory and os.getenv("SIMULATION_KEEP_FINISHED_SESSIONS") != "1":
+                    from config.environment_config import EnvironmentConfig
+                    import requests
+                    base = EnvironmentConfig.SIMULATION_API_BASE_URL
+                    if base:
+                        headers = {"X-Simulation-Session-Id": context.job_id}
+                        if os.getenv("SUPPLY_CHAIN_OPERATOR_TOKEN"):
+                            headers["Authorization"] = "Bearer " + os.environ["SUPPLY_CHAIN_OPERATOR_TOKEN"]
+                        try:
+                            requests.post(base.rstrip("/")+"/session/close", headers=headers, timeout=5)
+                        except requests.RequestException:
+                            pass  # A quarantined, draining session is released by the operator later.
+        if not isinstance(result, dict) or not result:
+            raise RuntimeError("Simulation manager returned no execution result")
         return {
             "status": result.get("status") or "completed",
-            "completed_steps": int(
-                result.get("completed_steps") or planned_total_steps
-            ),
-            "last_complete_round": result.get(
-                "last_complete_round",
-                planned_total_steps - 1,
-            ),
+            "completed_steps": result.get("completed_steps"),
+            "last_complete_round": result.get("last_complete_round"),
             "finish_reason": (
                 result.get("finish_reason")
                 or (result.get("stop_reason") or {}).get("message")

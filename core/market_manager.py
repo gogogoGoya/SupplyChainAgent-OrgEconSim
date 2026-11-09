@@ -39,6 +39,7 @@ class MarketManager:
         shared_resource_config=None,
         herding_config=None
     ):
+        self.random = random.Random()
         self.get_enterprise_instance = get_enterprise_instance
         self.markets = {}  # Embedded dictionary structure: parameter:parameter}
         self.total_steps = total_steps
@@ -405,7 +406,7 @@ class MarketManager:
             k = 0.5 if market_type == "regional" else 0.3
             type_factor = 1.0 if market_type == "regional" else 1.5
             base_demand = 300
-            market_activity_i = random.uniform(0.5, 1.5)
+            market_activity_i = self.random.uniform(0.5, 1.5)
             sales_per_market = assigned_workers
             sales_effect = 1 - math.exp(-k * assigned_workers)
             demand_i = base_demand * market_activity_i * sales_effect
@@ -1660,7 +1661,7 @@ class MarketManager:
             return None
         total_demand = 0
         for market_id, market_info in markets.items():
-            raw_quantity_i = market_info["demand_i"] * random.uniform(0.8, 1.2)
+            raw_quantity_i = market_info["demand_i"] * self.random.uniform(0.8, 1.2)
             total_demand += raw_quantity_i
         # production_manager = enterprise.business_modules.get("ProductionManager")[0]
         # total_capacity = production_manager.get_total_capacity().data.get("total_capacity", 0)
@@ -1674,15 +1675,15 @@ class MarketManager:
         scale = 1
         order_list = []
         for market_id, market_info in markets.items():
-            raw_quantity_i = market_info["demand_i"] * random.uniform(0.8, 1.2)
+            raw_quantity_i = market_info["demand_i"] * self.random.uniform(0.8, 1.2)
             final_quantity_i = math.ceil(raw_quantity_i * scale)
             products = market_info["products"]
             # product = random.choice(products)
             # product_id = product.get("id")
-            delivery_deadline = market_info["base_lead_time_i"] * market_info["sales_adjustment"] * capacity_adjustment * random.uniform(0.9,1.1)
+            delivery_deadline = market_info["base_lead_time_i"] * market_info["sales_adjustment"] * capacity_adjustment * self.random.uniform(0.9,1.1)
             delivery_deadline = self.cap_delivery_deadline(delivery_deadline)
             # Increased sales prices and changes in profits
-            unit_price = 180 * random.uniform(1.3,1.5)
+            unit_price = 180 * self.random.uniform(1.3,1.5)
             final_quantity_i = math.ceil(raw_quantity_i * scale)
             product_info = {
                 'product_id': "beer",

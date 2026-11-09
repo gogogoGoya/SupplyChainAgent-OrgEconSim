@@ -1,0 +1,40 @@
+name: Platform checks
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  platform:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: visualization/package-lock.json
+      - run: python -m pip install -r requirements.txt -c constraints-tested.txt
+      - name: Runtime, permissions and batch regressions
+        run: >-
+          python -m pytest test/test_platform_revision.py test/test_published_results.py test/test_result_gallery.py test/test_execution_review.py test/test_review_downloads.py
+          test/test_platform_access.py test/test_fd_batch.py test/test_operations_agent_env.py
+          test/test_multi_enterprise_runtime_guardrails.py test/test_firm_architecture_experiment.py
+          test/test_fd_matched_ablation.py test/test_long_horizon_resume.py
+          -k 'not twenty_round and not shared_warmup and not end_to_end' -q --disable-warnings
+      - run: npm ci
+        working-directory: visualization
+      - run: npm run lint && npm test && npm run build && npm run test:dev-boundary
+        working-directory: visualization
+      - run: npx playwright install --with-deps chromium
+        working-directory: visualization
+      - run: npm run test:browser
+        working-directory: visualization
+        env:
+          BROWSER_TEST_OUTPUT: ${{ github.workspace }}/browser-artifacts
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-diagnostics
+          path: browser-artifacts

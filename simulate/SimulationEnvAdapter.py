@@ -313,6 +313,9 @@ class SimulationEnvAdapter:
             )
 
         except Exception as e:
+            from core.execution_boundary import ExecutionIndeterminateError
+            if isinstance(e, ExecutionIndeterminateError):
+                raise
             logger.error(f"Error in simulation step: {str(e)}", exc_info=True)
             try:
                 current_state = self._get_observation(enterprise_name or "")

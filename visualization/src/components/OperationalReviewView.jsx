@@ -1,5 +1,10 @@
+import LoadingState from './LoadingState';
+import {setReviewChart} from '../utils/chartReview';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import * as echarts from 'echarts';
+import * as echarts from '../utils/echartsRuntime';
+import {clearReadCache} from '../utils/readClient.mjs';
+import {getArtifactView} from '../utils/operationsApi';
+import {reviewLocation} from '../utils/reviewDisplay';
 import { buildDataUrl, safeFetchJson } from '../utils/dataSource';
 import {
   convertQuantityByItem,
@@ -252,7 +257,7 @@ const buildFlowMeta = (enterpriseSpecs = []) => {
 
 const OperationalReviewView = ({ availableDays, dataRoot, quantityView, enterpriseSpecs = [] }) => {
   const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(true);const [error,setError]=useState('');const requestSerial=useRef(0);
   const backlogRef = useRef(null);
   const fillRateRef = useRef(null);
   const pendingRef = useRef(null);
@@ -263,7 +268,7 @@ const OperationalReviewView = ({ availableDays, dataRoot, quantityView, enterpri
   const latestDay = availableDays.length > 0 ? Math.max(...availableDays) : 0;
 
   useEffect(() => {
-    loadReviewData();
+    loadReviewData();return()=>{requestSerial.current+=1;};
   }, [availableDays.join(','), dataRoot, flowMeta.companies.join(',')]);
 
   useEffect(() => {
@@ -275,7 +280,7 @@ const OperationalReviewView = ({ availableDays, dataRoot, quantityView, enterpri
     return () => {
       window.removeEventListener('resize', handleResize);
     };
-  }, [rows, quantityView]);
+  }, [loading, rows, quantityView]);
 
   useEffect(() => () => {
     chartRefs.current.forEach((chart) => chart?.dispose());
@@ -283,12 +288,19 @@ const OperationalReviewView = ({ availableDays, dataRoot, quantityView, enterpri
   }, []);
 
   const loadReviewData = async () => {
-    setLoading(true);
+    const request=++requestSerial.current;setLoading(true);setError('');
+    try{
+    const {source,name}=reviewLocation(dataRoot);const result=await getArtifactView(source,name,'operations');
+    if(result.error&&result.status!==404)throw new Error(result.error);
+    if(result.data&&!['available','not_recorded','not_published'].includes(result.data.availability))throw new Error('The operations projection is invalid or changed. Republish this archive.');
+    const fast=result.data?.availability==='available'?result.data.data:null;
     const nextRows = [];
 
     for (const day of availableDays) {
+      if(request!==requestSerial.current)return;
       const companyRows = await Promise.all(flowMeta.companies.map(async (company) => {
-        const [sales, procurement, inventory] = await Promise.all([
+        const cached=fast?.rows.find(row=>row.day===day&&row.company===company);
+        const [sales, procurement, inventory] = cached?[{self_state:cached.sales},{self_state:cached.procurement},{self_state:cached.inventory}]:await Promise.all([
           safeFetchJson(buildDataUrl(dataRoot, `enterprises/${company}/department/sales/day${day}/sales.json`)),
           safeFetchJson(buildDataUrl(dataRoot, `enterprises/${company}/department/procurement/day${day}/procurement.json`)),
           safeFetchJson(buildDataUrl(dataRoot, `enterprises/${company}/department/inventory/day${day}/inventory.json`))
@@ -322,8 +334,9 @@ const OperationalReviewView = ({ availableDays, dataRoot, quantityView, enterpri
       nextRows.push(...companyRows);
     }
 
-    setRows(nextRows);
-    setLoading(false);
+    if(request===requestSerial.current)setRows(nextRows);
+    }catch(error){if(request===requestSerial.current)setError(error.message);}
+    finally{if(request===requestSerial.current)setLoading(false);}
   };
 
   const resetCharts = () => {
@@ -332,7 +345,7 @@ const OperationalReviewView = ({ availableDays, dataRoot, quantityView, enterpri
   };
 
   const renderCharts = () => {
-    if (rows.length === 0) {
+    if (loading||!backlogRef.current||rows.length === 0) {
       return;
     }
     resetCharts();
@@ -346,11 +359,11 @@ const OperationalReviewView = ({ availableDays, dataRoot, quantityView, enterpri
     const chart = echarts.init(backlogRef.current);
     chartRefs.current.push(chart);
 
-    chart.setOption({
+    setReviewChart(chart, {
       tooltip: { trigger: 'axis' },
       legend: { type: 'scroll', bottom: 0 },
       grid: { left: 44, right: 20, top: 24, bottom: 54 },
-      xAxis: { type: 'category', data: availableDays.map((day) => `Turn ${day}`) },
+      xAxis: { type: 'category', data: availableDays.map((day) => `Round ${day}`) },
       yAxis: { type: 'value', name: 'Quantity' },
       series: flowMeta.companies.flatMap((company) => {
         const companyRows = availableDays.map((day) => rows.find((row) => row.company === company && row.day === day));
@@ -379,11 +392,11 @@ const OperationalReviewView = ({ availableDays, dataRoot, quantityView, enterpri
     const chart = echarts.init(fillRateRef.current);
     chartRefs.current.push(chart);
 
-    chart.setOption({
+    setReviewChart(chart, {
       tooltip: { trigger: 'axis' },
       legend: { type: 'scroll', bottom: 0 },
       grid: { left: 44, right: 20, top: 24, bottom: 54 },
-      xAxis: { type: 'category', data: availableDays.map((day) => `Turn ${day}`) },
+      xAxis: { type: 'category', data: availableDays.map((day) => `Round ${day}`) },
       yAxis: {
         type: 'value',
         min: 0,
@@ -409,11 +422,11 @@ const OperationalReviewView = ({ availableDays, dataRoot, quantityView, enterpri
     const chart = echarts.init(pendingRef.current);
     chartRefs.current.push(chart);
 
-    chart.setOption({
+    setReviewChart(chart, {
       tooltip: { trigger: 'axis' },
       legend: { type: 'scroll', bottom: 0 },
       grid: { left: 44, right: 20, top: 24, bottom: 54 },
-      xAxis: { type: 'category', data: availableDays.map((day) => `Turn ${day}`) },
+      xAxis: { type: 'category', data: availableDays.map((day) => `Round ${day}`) },
       yAxis: { type: 'value', name: getQuantityAxisLabel('Total In Transit', quantityView) },
       series: flowMeta.companies.map((company) => ({
         name: `${flowMeta.companyNameMap[company] || company} pending`,
@@ -431,11 +444,11 @@ const OperationalReviewView = ({ availableDays, dataRoot, quantityView, enterpri
     const chart = echarts.init(inventoryPositionRef.current);
     chartRefs.current.push(chart);
 
-    chart.setOption({
+    setReviewChart(chart, {
       tooltip: { trigger: 'axis' },
       legend: { type: 'scroll', bottom: 0 },
       grid: { left: 44, right: 20, top: 24, bottom: 54 },
-      xAxis: { type: 'category', data: availableDays.map((day) => `Turn ${day}`) },
+      xAxis: { type: 'category', data: availableDays.map((day) => `Round ${day}`) },
       yAxis: { type: 'value', name: getQuantityAxisLabel('Aggregate Inventory Position', quantityView) },
       series: flowMeta.companies.map((company) => ({
         name: `${flowMeta.companyNameMap[company] || company} inventory position`,
@@ -493,8 +506,9 @@ const OperationalReviewView = ({ availableDays, dataRoot, quantityView, enterpri
     [latestRows, quantityView]
   );
 
+  if(error)return <section className="view-error" role="alert"><h3>Operations review unavailable</h3><p>{error}</p><button onClick={()=>{clearReadCache();loadReviewData();}}>Retry operations review</button></section>;
   if (loading) {
-    return <div className="loading">Loading operations review data...</div>;
+    return <LoadingState label="Loading operations review data…" variant="chart"/>;
   }
 
   return (
@@ -560,7 +574,7 @@ const OperationalReviewView = ({ availableDays, dataRoot, quantityView, enterpri
                   <th>{getQuantityColumnLabel('Safety Stock', quantityView)}</th>
                   <th>{getQuantityColumnLabel('Reorder Point', quantityView)}</th>
                   <th>{getQuantityColumnLabel('Recommended Replenishment', quantityView)}</th>
-                  <th>Due Turn</th>
+                  <th>Due Round</th>
                   <th>Request Created</th>
                 </tr>
               </thead>

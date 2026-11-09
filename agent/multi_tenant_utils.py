@@ -512,9 +512,14 @@ class MultiTenantUtils:
         return True
 
     @staticmethod
-    def _normalize_action_payload_shape(payload: Any) -> Any:
+    def _normalize_action_payload_shape(payload: Any, *, allow_legacy_wrapper: bool = False) -> Any:
         if isinstance(payload, dict) and isinstance(payload.get("action"), dict):
             return [payload]
+        # Legacy Skill examples wrap a flat action list in one extra array.
+        if (allow_legacy_wrapper and isinstance(payload, list) and len(payload) == 1
+                and isinstance(payload[0], list) and payload[0]
+                and all(isinstance(item, dict) for item in payload[0])):
+            return payload[0]
         return payload
 
     @staticmethod
@@ -561,7 +566,9 @@ class MultiTenantUtils:
             return False
 
     @staticmethod
-    def _normalize_action_file_if_possible(path: Path, dept: str) -> bool:
+    def _normalize_action_file_if_possible(
+        path: Path, dept: str, *, allow_legacy_wrapper: bool = False,
+    ) -> bool:
         if not path.exists():
             return False
         try:
@@ -570,7 +577,9 @@ class MultiTenantUtils:
         except (OSError, json.JSONDecodeError):
             return False
 
-        normalized = MultiTenantUtils._normalize_action_payload_shape(payload)
+        normalized = MultiTenantUtils._normalize_action_payload_shape(
+            payload, allow_legacy_wrapper=allow_legacy_wrapper,
+        )
         if normalized is payload:
             return MultiTenantUtils._is_valid_action_payload(payload, dept)
         if not MultiTenantUtils._is_valid_action_payload(normalized, dept):
@@ -1322,13 +1331,14 @@ class MultiTenantUtils:
 
     @staticmethod
     def write_round_integrity_summary(round_id: int) -> str:
-        """
-        The final completeness of each round is recorded at persist.
-
-        Note: This check is performed after day end archive, so anallysis gives priority to records/dayN,
-        The transaction department accepts the pre * archive file at the same time, avoiding miscalculating the normal archive as missing.
-                """
+        '\n        The final completeness of each round is recorded at persist.\n\n        Note: This check is performed after day end archive, so anallysis gives priority to records/dayN,\n        The transaction department accepts the pre * archive file at the same time, avoiding miscalculating the normal archive as missing.\n                '
         enterprise_ids = list(Config.ENTERPRISE_IDS)
+        from config.firm_architecture_experiment import policy_from_config
+        architecture_meta = MultiTenantUtils._read_json_if_exists(WORKSPACE / "run_meta.json", {})
+        architecture = policy_from_config(architecture_meta.get("scenario_config") or {})
+        if architecture and (architecture.get("family") != "fd4" or round_id >= 10):
+            from core.firm_decision_protocol import write_architecture_round_integrity
+            return write_architecture_round_integrity(WORKSPACE, round_id, enterprise_ids)
         totals = {
             "enterprise_count": len(enterprise_ids),
             "analysis_expected": len(enterprise_ids),

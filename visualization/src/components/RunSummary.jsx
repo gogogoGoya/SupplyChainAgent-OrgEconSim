@@ -1,5 +1,7 @@
+import LoadingState from './LoadingState';
+import {setReviewChart} from '../utils/chartReview';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import * as echarts from 'echarts';
+import * as echarts from '../utils/echartsRuntime';
 import { buildDataUrl, safeFetchJson } from '../utils/dataSource';
 import { buildExternalFlowSeries } from '../utils/externalMarketFlows';
 
@@ -14,7 +16,7 @@ const formatNumber = (value) => {
   return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(numeric);
 };
 
-const formatMoney = (value) => `¥${formatNumber(value)}`;
+const formatMoney = (value) => `SCU ${formatNumber(value)}`;
 
 const RunSummary = ({
   availableDays,
@@ -76,7 +78,7 @@ const RunSummary = ({
 
     chartInstanceRef.current = echarts.init(chartRef.current);
     const exchangeIds = [...new Set(exchangeRows.flatMap((row) => Object.keys(row.exchanges)))];
-    const xAxisData = exchangeRows.map((row) => `Turn ${row.day}`);
+    const xAxisData = exchangeRows.map((row) => `Round ${row.day}`);
     const series = exchangeIds.flatMap((exchangeId) => [
       {
         name: `${exchangeId} Orders`,
@@ -119,7 +121,7 @@ const RunSummary = ({
       );
     }
 
-    chartInstanceRef.current.setOption({
+    setReviewChart(chartInstanceRef.current, {
       tooltip: { trigger: 'axis' },
       legend: {
         type: 'scroll',
@@ -216,7 +218,7 @@ const RunSummary = ({
   };
 
   if (loading) {
-    return <div className="loading">Loading run overview...</div>;
+    return <LoadingState label="Loading run overview…" variant="chart"/>;
   }
 
   return (

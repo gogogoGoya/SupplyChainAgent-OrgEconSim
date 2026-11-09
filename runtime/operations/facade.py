@@ -11,6 +11,8 @@ from config.integration_profiles import (
 )
 from config.simulation_preset_config import get_scenario_config
 from config.simulation_preset_config import normalize_market_demand_mode
+from config.fd_experiment import resolve_fd_experiment
+from config.firm_architecture_experiment import validate_scenario, policy_from_config
 
 from .service import OperationsService
 
@@ -44,6 +46,25 @@ class OperationsFacade:
             config_overrides or {},
         )
         scenario_config = _ensure_external_order_product_alignment(scenario_config)
+        if not policy_from_config(scenario_config):
+            scenario_config = resolve_fd_experiment(scenario_config, scenario_id, planned_total_steps)
+        validate_scenario(scenario_config, planned_total_steps)
+        architecture = policy_from_config(scenario_config)
+        if architecture:
+            tags = list(dict.fromkeys([*(tags or []), f"firm-architecture:{architecture['architecture']}",
+                                       f"firm-protocol:{architecture['version']}",
+                                       f"firm-baseline:{architecture.get('baseline_group', 'legacy')}"]))
+            if architecture.get("arm"):
+                tags.append("fd-arm:" + architecture["arm"])
+            if (architecture.get("baseline") or {}).get("source_run_id"):
+                tags.append("firm-baseline-run:" + architecture["baseline"]["source_run_id"])
+        fd_policy = ((scenario_config.get("runtime_injection") or {}).get(
+            "single_enterprise_case_policy") or {}).get("fd_experiment") or {}
+        if fd_policy.get("version"):
+            tags = list(dict.fromkeys([*(tags or []), f"fd-version:{fd_policy['version']}",
+                                       f"fd-condition:{fd_policy['condition']}"]))
+            if fd_policy.get("instance_sequence"):
+                tags.append(f"fd-instance:{fd_policy['instance_sequence']:02d}")
         _validate_cobweb_experiment_contract(scenario_config)
         _validate_long_horizon_evolution_contract(
             scenario_config,

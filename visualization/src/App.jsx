@@ -1,26 +1,34 @@
+import {setReviewChart} from './utils/chartReview';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import * as echarts from 'echarts';
+import PlatformAccessBadge from './components/PlatformAccessBadge';
+import RunEvidencePanel, {RunComparison} from './components/RunEvidencePanel';
 import CompanySelector from './components/CompanySelector';
 import DaySelector from './components/DaySelector';
 import CompanyInfo from './components/CompanyInfo';
 import ExchangeInfo from './components/ExchangeInfo';
 import CEOAnalysis from './components/CEOAnalysis';
 import ExchangeEnterprisePanel from './components/ExchangeEnterprisePanel';
-import RunSummary from './components/RunSummary';
-import FlowProductionView from './components/FlowProductionView';
-import GlobalSimulationView from './components/GlobalSimulationView';
-import BullwhipEffectView from './components/BullwhipEffectView';
-import CobwebModelValidationView from './components/CobwebModelValidationView';
-import CommonsTragedyView from './components/CommonsTragedyView';
-import HerdingEffectView from './components/HerdingEffectView';
-import EvolutionExperimentView from './components/EvolutionExperimentView';
-import OperationalReviewView from './components/OperationalReviewView';
-import ExperimentOperationsView from './components/ExperimentOperationsView';
-import DemandPropagationView from './components/DemandPropagationView';
-import SingleEnterprisePerformanceView from './components/SingleEnterprisePerformanceView';
+const RunSummary = React.lazy(() => import('./components/RunSummary'));
+const FlowProductionView = React.lazy(() => import('./components/FlowProductionView'));
+const GlobalSimulationView = React.lazy(() => import('./components/GlobalSimulationView'));
+const BullwhipEffectView = React.lazy(() => import('./components/BullwhipEffectView'));
+const CobwebModelValidationView = React.lazy(() => import('./components/CobwebModelValidationView'));
+const CommonsTragedyView = React.lazy(() => import('./components/CommonsTragedyView'));
+const HerdingEffectView = React.lazy(() => import('./components/HerdingEffectView'));
+const EvolutionExperimentView = React.lazy(() => import('./components/EvolutionExperimentView'));
+const OperationalReviewView = React.lazy(() => import('./components/OperationalReviewView'));
+const ExperimentOperationsView = React.lazy(() => import('./components/ExperimentOperationsView'));
+const DemandPropagationView = React.lazy(() => import('./components/DemandPropagationView'));
+const SingleEnterprisePerformanceView = React.lazy(() => import('./components/SingleEnterprisePerformanceView'));
 import SingleEnterpriseActionList from './components/SingleEnterpriseActionList';
+import LoadingState from './components/LoadingState';
+import ViewerActivity from './components/ViewerActivity';
+import DisplayOptions from './components/DisplayOptions';
+import ViewBoundary,{ViewLoading} from './components/ViewBoundary';
+import LazyDetails from './components/LazyDetails';
+import {cancelViewReads,clearDataSourceCache,getDataRequestState} from './utils/dataSource';
 import { LATEST_RUN_ID, buildDataUrl, resolveDataRoot, resolveWorkspaceJobRoot, safeFetchJson } from './utils/dataSource';
-import { listArtifactRuns, listOperationsJobs } from './utils/operationsApi';
+import { listAllArtifactRuns, listOperationsJobs } from './utils/operationsApi';
 import { buildQuantityView } from './utils/productEquivalent';
 
 const formatNumber = (value) => {
@@ -36,7 +44,7 @@ const formatCurrency = (value) => {
   if (!Number.isFinite(numeric)) {
     return '-';
   }
-  return `¥${new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(numeric)}`;
+  return `SCU ${new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(numeric)}`;
 };
 
 const getRunTimeSortValue = (meta) => (
@@ -105,7 +113,7 @@ const ANALYSIS_SCOPE_CONFIGS = [
 ];
 
 const MULTI_ANALYSIS_PAGES = [
-  { id: 'daily', label: 'Turn View' },
+  { id: 'daily', label: 'Round View' },
   { id: 'propagation', label: 'Propagation Review' },
   { id: 'global', label: 'Global Review' },
   { id: 'scenario', label: 'Scenario Analysis' },
@@ -113,7 +121,7 @@ const MULTI_ANALYSIS_PAGES = [
 ];
 
 const SINGLE_ANALYSIS_PAGES = [
-  { id: 'daily', label: 'Turn View' },
+  { id: 'daily', label: 'Round View' },
 ];
 
 const SINGLE_CASE_FILTER_CONFIGS = [
@@ -154,7 +162,8 @@ const getSimulationProfileFromMeta = (runMeta) => {
   return (
     runMeta?.integration_profiles?.simulation?.profile
     || runMeta?.scenario_config?.integration_profiles?.simulation?.profile
-    || (scenarioId.startsWith('single_case_') ? 'single_enterprise' : 'multi_enterprise')
+    || ((scenarioId.startsWith('single_case_') || scenarioId.startsWith('firm_ablation_fd'))
+      ? 'single_enterprise' : 'multi_enterprise')
   );
 };
 
@@ -198,7 +207,13 @@ const pickPreferredRun = (
 };
 
 const getSingleCaseIdFromMeta = (runMeta) => {
-  const scenarioId = String(getScenarioIdFromMeta(runMeta)).toLowerCase();
+  const scenarioId = String(
+    runMeta?.scenario_config?.runtime_injection?.single_enterprise_case_policy?.case_id
+    || runMeta?.experiment_design?.source_scenario_id
+    || runMeta?.scenario_config?.experiment_design?.source_scenario_id
+    || (String(getScenarioIdFromMeta(runMeta)).startsWith('firm_ablation_fd4_')
+      ? 'single_case_04_staff_shortage' : getScenarioIdFromMeta(runMeta))
+  ).toLowerCase();
   if (!scenarioId.startsWith('single_case_')) {
     return '';
   }
@@ -395,7 +410,7 @@ const buildRunRecordFileLinks = (run) => {
   const fileSpecs = [
     ['run_meta', 'run_meta.json'],
     ['Final-turn exchange', `public/exchange/day${lastRound}/exchange.json`],
-    ['Turn integrity', `round_integrity/day${lastRound}.json`],
+    ['Round integrity', `round_integrity/day${lastRound}.json`],
     ['Run metrics', `projections/run_metrics/day${lastRound}/run_metrics_projection.json`],
     ['Order lifecycle', `projections/multi_enterprise/day${lastRound}/order_lifecycle_projection.json`],
   ];
@@ -494,7 +509,7 @@ const formatRunLabel = (runId, meta, isLatest = false, experimentTag = '') => {
   const scenarioCategory = getScenarioCategoryLabel(meta);
   const controlMode = getRunControlModeLabel(meta);
   const finishedAt = meta?.finished_at || meta?.archived_at || meta?.started_at || '';
-  const stepLabel = meta?.completed_steps || meta?.total_steps || meta?.planned_total_steps;
+  const stepLabel = meta?.completed_steps ?? meta?.total_steps;
   const prefix = experimentTag ? `★ ${isLatest ? 'latest' : runId}` : (isLatest ? 'latest' : runId);
   const tagSuffix = experimentTag ? ` · Tag: ${formatExperimentTag(experimentTag)}` : '';
   const timeSuffix = finishedAt ? ` · ${formatDisplayTime(finishedAt)}` : '';
@@ -531,6 +546,8 @@ const buildRunEntriesFromArtifactIndex = (entries = []) => (
     const meta = {
       ...(entry?.meta || {}),
       _visualization_max_day: entry?.max_day,
+      available_rounds: entry?.available_rounds,
+      integrity: entry?.integrity,
     };
     const runId = meta.run_id || entry?.resolved_run_id || entry?.name || entry?.id || '';
     const sourceLabel = entry?.source_label || entry?.name || runId;
@@ -709,12 +726,13 @@ const RoundEnterpriseBoard = ({
   companyNameMap,
   includeSingleCaseSeedActions = false,
 }) => {
-  const [rows, setRows] = useState([]);
+  const [rows, setRows] = useState([]);const [boardLoading,setBoardLoading]=useState(true);const [boardError,setBoardError]=useState('');
 
   useEffect(() => {
     let cancelled = false;
     const departments = ['finance', 'sales', 'procurement', 'inventory', 'production'];
     const loadRows = async () => {
+      setBoardLoading(true);setBoardError('');
       const nextRows = await Promise.all((enterpriseSpecs || []).map(async (spec) => {
         const enterpriseId = getEnterpriseId(spec);
         const departmentData = {};
@@ -760,25 +778,25 @@ const RoundEnterpriseBoard = ({
         };
       }));
       if (!cancelled) {
-        setRows(nextRows);
+        setRows(nextRows);setBoardLoading(false);
       }
     };
-    loadRows();
+    loadRows().catch(error=>{if(!cancelled){setBoardError(error.message);setBoardLoading(false);}});
     return () => {
       cancelled = true;
     };
   }, [enterpriseSpecs, currentDay, dataRoot]);
 
-  if (!rows.length) {
-    return null;
-  }
+  if(boardLoading)return <LoadingState label="Loading round snapshot and enterprise actions…" variant="metrics"/>;
+  if(boardError)return <div className="error" role="alert">Round snapshot unavailable: {boardError}</div>;
+  if (!rows.length) return <div className="empty-state">No enterprise snapshot is available for this selection.</div>;
 
   return (
     <section className="round-overview-panel">
       <div className="round-overview-header">
         <div>
           <span>Round Snapshot</span>
-          <strong>Enterprise States and Actions for Turn {currentDay}</strong>
+          <strong>Enterprise States and Actions for Round {currentDay}</strong>
         </div>
         <small>Select an enterprise card to update the details below. Inventory alerts, output, and action names highlight changes in this turn.</small>
       </div>
@@ -849,9 +867,12 @@ function App() {
   const [includeUpstreamExternalSupplierMode, setIncludeUpstreamExternalSupplierMode] = useState(false);
   const [includeDownstreamExternalMarketMode, setIncludeDownstreamExternalMarketMode] = useState(false);
   const [viewMode, setViewMode] = useState('welcome');
+  const [runFiltersOpen,setRunFiltersOpen]=useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const catalogRequest=useRef(0),archiveRequest=useRef(0);
   const chartRef = useRef(null);
+  const [topologyLoading,setTopologyLoading]=useState(true);
   const chartInstance = useRef(null);
   const selectedRunEntry = useMemo(
     () => availableRuns.find((run) => run.id === selectedRunId) || null,
@@ -1028,10 +1049,16 @@ function App() {
 
   useEffect(() => {
     loadRunCatalog();
+    const changed = () => loadRunCatalog();
+    window.addEventListener('platform-access-changed', changed);
+    return () => window.removeEventListener('platform-access-changed',changed);
   }, []);
 
   useEffect(() => {
+    let active=true;
     setSelectedRunMeta(selectedRunEntry?.meta || null);
+    if(selectedRunEntry?.dataRoot) safeFetchJson(buildDataUrl(selectedRunEntry.dataRoot,'run_meta.json')).then(meta=>{if(active&&meta)setSelectedRunMeta({...selectedRunEntry.meta,...meta});});
+    return()=>{active=false;};
   }, [selectedRunEntry]);
 
   useEffect(() => {
@@ -1053,6 +1080,7 @@ function App() {
       return;
     }
     loadAnalysisData(activeRunId);
+    return()=>{archiveRequest.current+=1;};
   }, [activeRunId, viewMode]);
 
   useEffect(() => {
@@ -1101,11 +1129,13 @@ function App() {
     preferLatest = false,
     preferredScope = 'multi',
   } = {}) => {
+    const request=++catalogRequest.current;
     try {
       setLoading(true);
       setError(null);
 
       const runs = await detectAvailableRuns();
+      if(request!==catalogRequest.current)return {runs:[],resolvedRunId:'',resolvedRunMeta:null};
       setAvailableRuns(runs);
       const candidateRunId = preferredRunId || selectedRunId;
       const shouldKeepSelection = !preferLatest && candidateRunId && candidateRunId !== 'workspace_current';
@@ -1122,7 +1152,7 @@ function App() {
       setLoading(false);
       return { runs, resolvedRunId, resolvedRunMeta };
     } catch (error) {
-      console.error('Failed to load the run catalog:', error);
+      if(request!==catalogRequest.current)return {runs:[],resolvedRunId:'',resolvedRunMeta:null};
       setError('Failed to load the run catalog: ' + error.message);
       setLoading(false);
       return { runs: [], resolvedRunId: '', resolvedRunMeta: null };
@@ -1130,33 +1160,41 @@ function App() {
   };
 
   const loadAnalysisData = async (runId) => {
+    const request=++archiveRequest.current;
     try {
       setLoading(true);
       setError(null);
 
       const runEntry = availableRuns.find((run) => run.id === runId) || null;
       const rootPath = runEntry?.dataRoot || resolveDataRoot(runId);
-      const maxDay = await detectMaxDay(rootPath, runEntry?.meta || selectedRunMeta || null);
-      setAvailableDays(Array.from({ length: maxDay + 1 }, (_, i) => i));
+      const metaUrl=buildDataUrl(rootPath,'run_meta.json');
+      const fullMeta = await safeFetchJson(metaUrl);
+      if(request!==archiveRequest.current)return;
+      if(!fullMeta)throw new Error(getDataRequestState(metaUrl).reason||'The selected archive metadata is unavailable.');
+      const reviewMeta = {...(fullMeta || runEntry?.meta || selectedRunMeta || {}),...Object.fromEntries(Object.entries(runEntry?.meta || {}).filter(([key])=>key==='available_rounds'||key==='integrity'||key==='_visualization_max_day'))};
+      const maxDay = await detectMaxDay(rootPath, reviewMeta);
+      if(request!==archiveRequest.current)return;
+      setAvailableDays(runEntry?.meta?.available_rounds ?? Array.from({ length: maxDay + 1 }, (_, i) => i));
       setCurrentDay(maxDay < 0 ? 0 : maxDay);
       setSelectedExchangeId(null);
-      setActiveRunMeta(runEntry?.meta || selectedRunMeta || null);
+      setActiveRunMeta(reviewMeta);
       setAnalysisScope(getAnalysisScopeFromMeta(runEntry?.meta || selectedRunMeta));
       setScenarioPage(detectScenarioPage(runEntry?.meta || selectedRunMeta) || 'bullwhip');
       setLoading(false);
     } catch (loadError) {
-      console.error('Failed to load simulation data:', loadError);
+      if(request!==archiveRequest.current)return;
       setError('Failed to load simulation data: ' + loadError.message);
       setLoading(false);
     }
   };
 
   const detectAvailableRuns = async () => {
-    const artifactRunsResult = await listArtifactRuns({ limit: 500 });
-    if (artifactRunsResult.available && artifactRunsResult.entries.length > 0) {
+    const artifactRunsResult = await listAllArtifactRuns();
+    if (artifactRunsResult.available && !artifactRunsResult.error) {
       return finalizeRunCatalog(buildRunEntriesFromArtifactIndex(artifactRunsResult.entries));
     }
 
+    if(artifactRunsResult.status!==404)throw new Error(artifactRunsResult.error||'The run catalog could not be read. Retry the run list.');
     const workspaceMeta = await safeFetchJson(buildDataUrl(resolveDataRoot(LATEST_RUN_ID), 'run_meta.json'), { forceRefresh: true });
     const simulationRunsListing = await safeFetchJson('/simulation_runs/', { forceRefresh: true });
     const operationsJobResult = await listOperationsJobs({ limit: 500 });
@@ -1355,7 +1393,7 @@ function App() {
           <div className="demand-series-panel">
             {(demandSeries || []).map((value, index) => (
               <div key={`${index}-${value}`} className="demand-chip">
-                <span>Turn {index}</span>
+                <span>Round {index}</span>
                 <strong>{formatNumber(value)}</strong>
               </div>
             ))}
@@ -1379,7 +1417,7 @@ function App() {
                   <div className="enterprise-detail-item">
                     <span>Initial Cash</span>
                     <strong>{formatCurrency(enterprise.initial_capital)}</strong>
-                    <p>Cash available for operations and transactions at the start of Turn 0.</p>
+                    <p>Cash available for operations and transactions at the start of Round 0.</p>
                   </div>
                   <div className="enterprise-detail-item">
                     <span>Initial Storage Capacity</span>
@@ -1559,7 +1597,7 @@ function App() {
               <p>Enterprises included in automatic payroll settlement.</p>
             </div>
             <div className="meaning-card">
-              <span>Per-Turn Inventory Settlement</span>
+              <span>Per-Round Inventory Settlement</span>
               <strong>{runtimeInjection.inventory_cost_daily_settlement_enabled ? 'Enabled' : 'Disabled'}</strong>
               <p>Whether inventory holding and operating costs are settled automatically in each daily cycle.</p>
             </div>
@@ -1571,41 +1609,31 @@ function App() {
           </div>
         </section>
 
-        <details className="welcome-config-raw">
-          <summary>View Raw Scenario JSON</summary>
-          <pre>{JSON.stringify(scenarioConfig, null, 2)}</pre>
-        </details>
+        <LazyDetails className="welcome-config-raw" summary="View Raw Scenario JSON">{()=> <pre>{JSON.stringify(scenarioConfig,null,2)}</pre>}</LazyDetails>
       </div>
     );
   };
 
-  const handleEnterAnalysis = async () => {
-    const preferredScope = selectedRunMeta
-      ? getAnalysisScopeFromMeta(selectedRunMeta)
-      : 'multi';
-    const refreshedCatalog = await loadRunCatalog({ preferredRunId: selectedRunId, preferredScope });
-    const nextRunId = refreshedCatalog.resolvedRunId || selectedRunId;
-    const nextRunMeta = refreshedCatalog.resolvedRunMeta || selectedRunMeta;
-    const nextScenarioPage = detectScenarioPage(nextRunMeta);
-    const nextAnalysisScope = getAnalysisScopeFromMeta(nextRunMeta);
-    setLoading(true);
-    setActiveRunId(nextRunId);
-    setActiveRunMeta(nextRunMeta);
-    setAnalysisScope(nextAnalysisScope);
-    setScenarioPage(nextScenarioPage || 'bullwhip');
-    setCurrentPage(nextScenarioPage && nextAnalysisScope === 'multi' ? 'scenario' : 'daily');
-    const nextEnterpriseSpecs = getEnterpriseSpecsFromMeta(nextRunMeta);
-    setCurrentCompany(nextEnterpriseSpecs[0]?.enterprise_id || nextEnterpriseSpecs[0]?.id || '');
-    setViewMode('analysis');
+  const handleEnterAnalysis = () => {
+    const entry=availableRuns.find(run=>run.id===selectedRunId);
+    if(!entry)return;
+    cancelViewReads();
+    const nextMeta=selectedRunMeta||entry.meta;
+    const scope=getAnalysisScopeFromMeta(nextMeta);
+    const scene=detectScenarioPage(nextMeta);
+    setLoading(true);setError(null);setActiveRunId(entry.id);setActiveRunMeta(nextMeta);
+    setAnalysisScope(scope);setScenarioPage(scene||'bullwhip');
+    setCurrentPage(scene&&scope==='multi'?'scenario':'daily');
+    const specs=getEnterpriseSpecsFromMeta(nextMeta);
+    setCurrentCompany(specs[0]?.enterprise_id||specs[0]?.id||'');setViewMode('analysis');
   };
 
   const handleEnterExperimentOps = () => {
-    setViewMode('experimentOps');
+    cancelViewReads();setViewMode('experimentOps');
   };
 
   const handleBackToWelcome = () => {
-    setViewMode('welcome');
-    loadRunCatalog({ preferLatest: true });
+    cancelViewReads();setViewMode('welcome');
   };
 
   const handleScenarioFilterChange = (filterValue) => {
@@ -1719,6 +1747,8 @@ function App() {
     if (!runEntry) {
       return;
     }
+    cancelViewReads();setLoading(true);setError(null);
+    if(runId===activeRunId&&viewMode==='analysis')loadAnalysisData(runId);
     const nextAnalysisScope = getAnalysisScopeFromMeta(runEntry?.meta);
     setSelectedRunId(runId);
     setSelectedRunMeta(runEntry?.meta || null);
@@ -1869,27 +1899,13 @@ function App() {
   };
 
   const detectMaxDay = async (rootPath, runMeta = null) => {
-    const indexedMaxDay = Number(runMeta?._visualization_max_day);
-    if (Number.isFinite(indexedMaxDay) && indexedMaxDay >= 0) {
-      return indexedMaxDay;
-    }
-    const knownSteps = Number(runMeta?.completed_steps || runMeta?.total_steps || 0);
-    if (Number.isFinite(knownSteps) && knownSteps > 0) {
-      return knownSteps - 1;
-    }
-    const runStatus = String(runMeta?.status || '').toLowerCase();
-    const plannedSteps = Number(runMeta?.planned_total_steps || 0);
-    if (
-      ['completed', 'stopped', 'stopped_by_guard', 'failed'].includes(runStatus)
-      && Number.isFinite(plannedSteps)
-      && plannedSteps > 0
-    ) {
-      return plannedSteps - 1;
-    }
-
+    if (Array.isArray(runMeta?.available_rounds)) return Math.max(-1, ...runMeta.available_rounds);
+    if (runMeta?._visualization_max_day != null) return Number(runMeta._visualization_max_day);
+    const steps = runMeta?.completed_steps ?? runMeta?.total_steps;
+    if (steps != null && Number(steps) === 0) return -1;
     // Use public exchange snapshots as the turn source so Vite's HTML fallback is not mistaken for data.
     let maxDay = -1;
-    for (let i = 0; i < 100; i++) {
+    for (let i = 0; i < Math.max(200, Number(steps) || 0); i++) {
       try {
         const data = await safeFetchJson(buildDataUrl(rootPath, `public/exchange/day${i}/exchange.json`));
         if (data?.status !== 'success' || !data?.data) {
@@ -1900,7 +1916,7 @@ function App() {
         break;
       }
     }
-    
+
     // If no exchange snapshots are available, infer the latest turn from enterprise records.
     if (maxDay === -1) {
       try {
@@ -1929,11 +1945,16 @@ function App() {
         // Ignore fallback lookup errors.
       }
     }
-    
+
     return maxDay;
   };
 
   const initCompanyNetwork = () => {
+    setTopologyLoading(true);
+    let cancelled = false;
+    let removeResize = () => {};
+    import('./utils/echartsRuntime').then((echarts) => {
+      if (cancelled) return;
     if (!chartRef.current) return;
 
     if (chartInstance.current) {
@@ -2000,7 +2021,7 @@ function App() {
       ]
     };
 
-    chartInstance.current.setOption(option);
+    setReviewChart(chartInstance.current, option);setTopologyLoading(false);
 
     // Select a topology node to switch the active enterprise.
     chartInstance.current.on('click', function(params) {
@@ -2016,37 +2037,19 @@ function App() {
 
     window.addEventListener('resize', handleResize);
 
-    return () => {
-      window.removeEventListener('resize', handleResize);
-      chartInstance.current?.dispose();
-      chartInstance.current = null;
-    };
+    removeResize = () => window.removeEventListener('resize', handleResize);
+    }).catch(()=>{if(!cancelled){setTopologyLoading(false);if(chartRef.current)chartRef.current.textContent='The topology diagram could not be loaded. Other records remain available.';}});
+    return () => {cancelled=true;removeResize();chartInstance.current?.dispose();chartInstance.current=null;};
   };
-
-  if (loading && viewMode === 'analysis') {
-    return (
-      <div className="app-container">
-        <div className="loading">Loading data...</div>
-      </div>
-    );
-  }
-
-  if (error && viewMode === 'analysis') {
-    return (
-      <div className="app-container">
-        <div className="error">{error}</div>
-      </div>
-    );
-  }
 
   if (viewMode === 'welcome') {
     return (
-      <div className="welcome-shell">
-        <div className="welcome-hero">
+      <div className="welcome-shell"><ViewerActivity/>
+        <div className="welcome-hero"><PlatformAccessBadge />
           <div className="welcome-badge">Supply Chain Simulation</div>
           <h1>Supply Chain Simulation Review</h1>
           <p>
-            Review completed simulation results or open Experiment Operations to create, start, and stop simulation jobs.
+            Explore archived enterprise decisions, operating outcomes, and experiment designs. Authorized operators can run simulations on a configured installation.
           </p>
         </div>
 
@@ -2063,16 +2066,16 @@ function App() {
           </button>
           <button type="button" className="welcome-entry-card operations" onClick={handleEnterExperimentOps}>
             <span>Experiment Ops</span>
-            <strong>Manage Experiments</strong>
-            <p>Create queued jobs, start workers, request controlled stops, and track job and run status.</p>
+            <strong>Browse Experiment Designs</strong>
+            <p>Inspect scenario configurations and available results. Experiment execution requires operator access.</p>
           </button>
         </section>
 
         <div className="welcome-panel">
           {loading ? (
-            <div className="loading">Loading runs...</div>
+            <LoadingState label="Loading available experiments…" variant="metrics"/>
           ) : error ? (
-            <div className="error">{error}</div>
+            <div className="error" role="alert">{error}<button onClick={()=>{clearDataSourceCache();loadRunCatalog();}}>Retry run list</button></div>
           ) : (
             <>
             <section className="welcome-block welcome-selection-block">
@@ -2081,7 +2084,7 @@ function App() {
                     <h2>Select a Simulation Run</h2>
                     <span>Browse the active workspace and archived operations or legacy runs.</span>
                   </div>
-                  <button type="button" className="welcome-refresh-btn" onClick={loadRunCatalog}>
+                  <button type="button" className="welcome-refresh-btn" onClick={()=>{clearDataSourceCache();loadRunCatalog();}}>
                     Refresh Run List
                   </button>
                 </div>
@@ -2127,7 +2130,7 @@ function App() {
                     )}
                   </select>
                   {filteredAvailableRuns.length === 0 && (
-                    <small className="welcome-selector-hint">No runs match the current filters.</small>
+                    <small className="welcome-selector-hint">{availableRuns.length === 0 ? "No published results are loaded. The host can publish existing runs; self-hosted users can import the included FD4 example." : "No runs match the current filters."}</small>
                   )}
                 </div>
 
@@ -2159,7 +2162,7 @@ function App() {
                 <div className="welcome-meta-grid">
                   <div className="welcome-meta-card accent">
                     <span>Detected Scenario</span>
-                    <strong>{getScenarioCategoryLabel(selectedRunMeta)}</strong>
+                    <strong>{selectedRunMeta ? getScenarioCategoryLabel(selectedRunMeta) : 'No result loaded'}</strong>
                   </div>
                   {selectedRunEntry?.experimentTag && (
                     <div className="welcome-meta-card key-run">
@@ -2181,7 +2184,7 @@ function App() {
                   </div>
                   <div className="welcome-meta-card">
                     <span>Completed / Planned Turns</span>
-                    <strong>{renderRunMetaValue(selectedRunMeta?.completed_steps || selectedRunMeta?.total_steps || selectedRunMeta?.planned_total_steps)}</strong>
+                    <strong>{`${selectedRunMeta?.completed_steps ?? selectedRunMeta?.total_steps ?? 'Not recorded'} / ${selectedRunMeta?.planned_total_steps ?? 'Not recorded'}`}</strong>
                   </div>
                   <div className="welcome-meta-card">
                     <span>Started</span>
@@ -2387,7 +2390,7 @@ function App() {
                 </div>
               </section>
 
-              <section className="welcome-block welcome-config-block">
+              {selectedRunMeta && <section className="welcome-block welcome-config-block">
                 <div className="welcome-config-header">
                   <h3>Configuration Details</h3>
                   <span>{renderRunMetaValue(selectedRunMeta?.scenario_meta?.summary)}</span>
@@ -2395,7 +2398,8 @@ function App() {
                 <div className="welcome-config-card">
                   {renderScenarioConfigSummary(selectedRunMeta)}
                 </div>
-              </section>
+              </section>}
+              {selectedRunRecords.length>1 && <RunComparison runs={selectedRunRecords} />}
             </>
           )}
         </div>
@@ -2418,9 +2422,9 @@ function App() {
 
   if (viewMode === 'experimentOps') {
     return (
-      <div className="app experiment-ops-shell">
+      <div className="app experiment-ops-shell"><ViewerActivity/>
         <div className="app-header experiment-ops-app-header">
-          <div className="analysis-toolbar">
+          <PlatformAccessBadge /><div className="analysis-toolbar">
             <button type="button" className="back-to-welcome-btn" onClick={handleBackToWelcome}>
               Back to Start
             </button>
@@ -2434,51 +2438,56 @@ function App() {
           </p>
         </div>
         <div className="main-content-wrapper">
-          <ExperimentOperationsView
+          <ViewBoundary resetKey="operations"><React.Suspense fallback={<ViewLoading label="Opening experiment operations…"/>}><ExperimentOperationsView
             currentRunId={activeRunMeta?.run_id || activeRunEntry?.id || activeRunId || selectedRunId}
             currentRunMeta={activeRunMeta || selectedRunMeta}
             currentRunSourceLabel={activeRunEntry?.sourceLabel || selectedRunEntry?.sourceLabel || dataRoot}
             availableRuns={availableRuns}
-          />
+          /></React.Suspense></ViewBoundary>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="app">
-      <div className="app-header">
-        <div className="analysis-toolbar">
-          <button type="button" className="back-to-welcome-btn" onClick={handleBackToWelcome}>
-            Back to Start
+    <div className={`app results-app ${currentPage==='daily'?'has-round-dock':''}`}><ViewerActivity/>
+      <div className="app-header analysis-header">
+        <div className="analysis-brand-row">
+          <h1>Supply Chain Enterprise Simulation</h1>
+          <PlatformAccessBadge/>
+          <div className="analysis-toolbar">
+          <button type="button" aria-label="Back to Start" className="back-to-welcome-btn" onClick={handleBackToWelcome}>
+            <span className="toolbar-label-full">Back to Start</span><span className="toolbar-label-short">Back</span>
           </button>
-          <button type="button" className="back-to-welcome-btn alt" onClick={handleEnterExperimentOps}>
-            Experiment Operations
+          <button type="button" aria-label="Experiment Operations" className="back-to-welcome-btn alt" onClick={handleEnterExperimentOps}>
+            <span className="toolbar-label-full">Experiment Operations</span><span className="toolbar-label-short">Experiments</span>
           </button>
         </div>
-        <h1>Supply Chain Enterprise Simulation</h1>
-        <p>
-          Enterprise relationships, operations, and economic dynamics
-          {activeRunMeta?.run_id ? ` · ${activeRunMeta.run_id}` : ''}
-          {activeRunMeta?.scenario_meta?.name ? ` · ${activeRunMeta.scenario_meta.name}` : activeRunMeta?.scenario_id ? ` · ${activeRunMeta.scenario_id}` : ''}
+        </div>
+        <p className="analysis-run-caption" title={`${activeRunMeta?.run_id||''} · ${activeRunMeta?.scenario_id||''}`}>
+          {activeRunMeta?.run_id ? `Run: ${activeRunMeta.run_id}` : 'Results review'}
+          {activeRunMeta?.scenario_id ? ` · ${activeRunMeta.scenario_id}` : ''}
         </p>
-        <div className="analysis-header-controls">
+        <div id="analysis-run-controls" className={`analysis-header-controls ${runFiltersOpen?'filters-open':'filters-collapsed'}`}>
           <div className="analysis-scope-switcher">
             {ANALYSIS_SCOPE_CONFIGS.map((scope) => (
               <button
                 type="button"
                 key={scope.id}
+                title={`${scope.label}: ${scope.description}`}
+                aria-label={scope.label}
+                aria-pressed={analysisScope===scope.id}
                 className={analysisScope === scope.id ? 'active' : ''}
                 onClick={() => handleAnalysisScopeChange(scope.id)}
               >
-                <strong>{scope.label}</strong>
+                <strong>{scope.id==='multi'?'Multi-enterprise':'Single-enterprise'}</strong>
                 <small>{scope.description}</small>
               </button>
             ))}
           </div>
           {analysisScope === 'single' && (
             <label className="analysis-run-switcher case-filter">
-              <span>Filter by Case</span>
+              <span>Case</span>
               <select
                 value={singleCaseFilter}
                 onChange={(event) => handleSingleCaseFilterChange(event.target.value)}
@@ -2497,7 +2506,7 @@ function App() {
           )}
           {analysisScope === 'multi' && (
             <label className="analysis-run-switcher case-filter">
-              <span>Filter by Scenario</span>
+              <span>Scenario</span>
               <select
                 value={multiScenarioFilter}
                 onChange={(event) => handleMultiScenarioFilterChange(event.target.value)}
@@ -2515,7 +2524,7 @@ function App() {
             </label>
           )}
           <label className="analysis-run-switcher case-filter">
-            <span>Decision Mode</span>
+            <span>Mode</span>
             <select
               value={analysisControlModeFilter}
               onChange={(event) => handleAnalysisControlModeFilterChange(event.target.value)}
@@ -2532,7 +2541,7 @@ function App() {
             </select>
           </label>
           <label className="analysis-run-switcher">
-            <span>Simulation Run</span>
+            <span>Run</span>
             <select
               value={analysisScopeRuns.some((run) => run.id === (activeRunId || selectedRunId)) ? (activeRunId || selectedRunId) : ''}
               onChange={(event) => handleAnalysisRunChange(event.target.value)}
@@ -2549,7 +2558,10 @@ function App() {
               )}
             </select>
           </label>
-          <div className="page-switcher">
+        </div>
+
+        <div className="analysis-view-controls">
+          <div className={`page-switcher ${visibleAnalysisPages.length===1?'single-page':''}`}>
             {visibleAnalysisPages.map((page) => {
               const scenarioPageDisabled = page.id === 'scenario' && !activeRunHasScenarioAnalysis;
               return (
@@ -2559,6 +2571,8 @@ function App() {
                   className={`page-tab ${currentPage === page.id ? 'active' : ''} ${scenarioPageDisabled ? 'disabled' : ''}`}
                   disabled={scenarioPageDisabled}
                   onClick={() => {
+                    if(currentPage===page.id)return;
+                    cancelViewReads();
                     if (page.id === 'scenario') {
                       const nextScenarioPage = detectScenarioPage(activeRunMeta || selectedRunMeta);
                       if (!nextScenarioPage) {
@@ -2574,9 +2588,8 @@ function App() {
               );
             })}
           </div>
-        </div>
-
-        <div className="analysis-toggle-anchor">
+          <button className="mobile-controls-toggle" aria-expanded={runFiltersOpen} aria-controls="analysis-run-controls" onClick={()=>setRunFiltersOpen(v=>!v)}>{runFiltersOpen?'Hide run filters':'Show run filters'}</button>
+        {analysisScope === 'multi' && <DisplayOptions activeCount={Number(productEquivalentMode)+Number(includeUpstreamExternalSupplierMode)+Number(includeDownstreamExternalMarketMode)}>
           <div className="analysis-external-toggle-stack">
             <label
               className={`analysis-quantity-toggle compact ${productEquivalentMode ? 'active' : ''}`}
@@ -2626,10 +2639,14 @@ function App() {
               </span>
             </label>
           </div>
+        </DisplayOptions>}
         </div>
       </div>
 
-      <div className="main-content-wrapper">
+      <div className="main-content-wrapper" aria-busy={loading}>
+        {loading?<ViewLoading label="Opening selected archive…"/>:error?<section className="view-error" role="alert"><h3>Archive unavailable</h3><p>{error}</p><button onClick={()=>{clearDataSourceCache();loadAnalysisData(activeRunId);}}>Retry archive</button><button onClick={handleBackToWelcome}>Back to Start</button></section>:<>
+        <ViewBoundary resetKey={`${dataRoot}:${currentCompany}:${currentDay}`}><RunEvidencePanel dataRoot={dataRoot} company={currentCompany} round={availableDays.length ? currentDay : undefined} /></ViewBoundary>
+        <ViewBoundary resetKey={`${dataRoot}:${currentPage}:${scenarioPage}:${currentCompany}:${currentDay}`}><React.Suspense fallback={<ViewLoading/>}>
         {currentPage === 'daily' ? (
           <div className="daily-page">
             {analysisScope === 'single' ? (
@@ -2639,7 +2656,7 @@ function App() {
                   currentCompany={currentCompany}
                   currentDay={currentDay}
                   dataRoot={dataRoot}
-                  onCompanyChange={setCurrentCompany}
+                  onCompanyChange={company=>{if(company!==currentCompany)cancelViewReads();setCurrentCompany(company);}}
                   companyNameMap={companyNameMap}
                   includeSingleCaseSeedActions
                 />
@@ -2651,7 +2668,7 @@ function App() {
                         companies={companies}
                         companyNameMap={companyNameMap}
                         currentCompany={currentCompany}
-                        onCompanyChange={setCurrentCompany}
+                        onCompanyChange={company=>{if(company!==currentCompany)cancelViewReads();setCurrentCompany(company);}}
                       />
                     </div>
 
@@ -2696,7 +2713,7 @@ function App() {
                         companies={companies}
                         companyNameMap={companyNameMap}
                         currentCompany={currentCompany}
-                        onCompanyChange={setCurrentCompany}
+                        onCompanyChange={company=>{if(company!==currentCompany)cancelViewReads();setCurrentCompany(company);}}
                       />
                     </div>
 
@@ -2717,7 +2734,7 @@ function App() {
                         <strong>Supply-Chain Topology</strong>
                       </div>
                     </div>
-                    <div className="chart-container daily-topology-chart" ref={chartRef}></div>
+                    <div className="topology-frame"><div className="chart-container daily-topology-chart" ref={chartRef}/>{topologyLoading&&<div className="topology-loading-overlay"><LoadingState label="Preparing enterprise network…" variant="compact"/></div>}</div>
                   </section>
 
                   <aside className="daily-side-panel daily-right-panel">
@@ -2734,7 +2751,7 @@ function App() {
                   currentCompany={currentCompany}
                   currentDay={currentDay}
                   dataRoot={dataRoot}
-                  onCompanyChange={setCurrentCompany}
+                  onCompanyChange={company=>{if(company!==currentCompany)cancelViewReads();setCurrentCompany(company);}}
                   companyNameMap={companyNameMap}
                 />
 
@@ -2753,15 +2770,7 @@ function App() {
               </>
             )}
 
-            {!(analysisScope === 'single' && singlePerformanceMode === 'trend') && (
-              <div className="fixed-day-selector">
-                <DaySelector
-                  availableDays={availableDays}
-                  currentDay={currentDay}
-                  onDayChange={setCurrentDay}
-                />
-              </div>
-            )}
+
           </div>
         ) : currentPage === 'propagation' ? (
           <div className="propagation-page">
@@ -2890,7 +2899,10 @@ function App() {
             includeDownstreamExternalMarketMode={includeDownstreamExternalMarketMode}
           />
         )}
+        </React.Suspense></ViewBoundary>
+        </>}
       </div>
+      {currentPage === 'daily' && <DaySelector floating disabled={loading||Boolean(error)} availableDays={availableDays} currentDay={currentDay} onDayChange={round => {if(round!==currentDay)cancelViewReads();setCurrentDay(round); if(analysisScope==='single')setSinglePerformanceMode('snapshot');}} />}
     </div>
   );
 }

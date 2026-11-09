@@ -12,10 +12,14 @@ import logging
 import os
 from pathlib import Path
 import pickle
+import functools
+import inspect
 import sys
 import math
+import uuid
 import json
 from fastapi import Body
+from fastapi.responses import JSONResponse
 
 # Add Item Root Directory to Python Path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -34,14 +38,39 @@ logger = logging.getLogger(__name__)
 from simulate.simulation import SupplyChainSimulation
 from simulate.SimulationEnvAdapter import SimulationEnvAdapter
 from runtime.operations.http_router import create_operations_router
+from runtime.platform_access import enforce_platform_access
 from config.project_paths import AGENT_ROOT, WORKSPACE_JOBS_ROOT, WORKSPACE_MULTI_ROOT
+from core.execution_boundary import assert_execution_ready, ExecutionIndeterminateError, has_pending_action, EXECUTION_PROTOCOL
+from runtime.session_boundary import session_scope, async_session_scope
+
 from network.exchange_manager import (
     get_next_id_counter_value,
     restore_next_id_counter_value,
 )
 
+INSTANCE_ID = os.environ.setdefault("SUPPLY_CHAIN_INSTANCE_ID", uuid.uuid4().hex)
+
 app = FastAPI(title="SupplyChain Simulation Server", version="1.0")
 app.include_router(create_operations_router())
+from runtime.artifact_http import create_artifact_router
+from runtime.result_access import private_results
+from config.platform_access import get_platform_access
+app.include_router(create_artifact_router())
+
+
+@app.middleware("http")
+async def enforce_public_viewer(request, call_next):
+    # Raw engine endpoints must not bypass the operations router's policy.
+    try:
+        enforce_platform_access(request)
+    except HTTPException as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail},
+                            headers=exc.headers)
+    token = private_results.set(get_platform_access().authenticated(request.headers.get("authorization", "")))
+    try:
+        return await call_next(request)
+    finally:
+        private_results.reset(token)
 
 
 def _sanitize_json_payload(value: Any) -> Any:
@@ -88,6 +117,7 @@ class ExecuteRequest(BaseModel):
     execute_type: str
     enterprise_name: Optional[str] = None
     dept: Optional[str] = None
+    submission_id: Optional[str] = None
 
 class StateRequest(BaseModel):
     enterprise_name: str = "Manufacturer"
@@ -173,7 +203,30 @@ def _get_session(session_id: str) -> SimulationSession:
                 "Call /simulation_config before using simulation endpoints."
             ),
         )
+    session.simulation.controller.execution_session_id = session_id
+    try:
+        assert_execution_ready(session.simulation.controller)
+    except ExecutionIndeterminateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     return session
+
+def session_boundary(function):
+    signature = inspect.signature(function)
+    def session_id(args, kwargs):
+        bound = signature.bind_partial(*args, **kwargs)
+        return _resolve_session_id(bound.arguments.get("x_simulation_session_id"))
+    if inspect.iscoroutinefunction(function):
+        @functools.wraps(function)
+        async def async_wrapped(*args, **kwargs):
+            async with async_session_scope(session_id(args, kwargs)):
+                return await function(*args, **kwargs)
+        return async_wrapped
+    @functools.wraps(function)
+    def wrapped(*args, **kwargs):
+        with session_scope(session_id(args, kwargs)):
+            return function(*args, **kwargs)
+    return wrapped
+
 
 @app.on_event("startup")
 async def startup_event():
@@ -182,6 +235,7 @@ async def startup_event():
     logger.info("Simulation server ready; no scenario is initialized until requested.")
 
 @app.get("/state")
+@session_boundary
 def get_state(
     req: StateRequest,
     x_simulation_session_id: Optional[str] = Header(default=None),
@@ -211,13 +265,12 @@ def get_state(
         }
     except HTTPException:
         raise
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Error getting state for {req.enterprise_name}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/exchange")
+@session_boundary
 def get_exchange_info(x_simulation_session_id: Optional[str] = Header(default=None)):
     try:
         session = _get_session(_resolve_session_id(x_simulation_session_id))
@@ -235,6 +288,7 @@ def get_exchange_info(x_simulation_session_id: Optional[str] = Header(default=No
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/simulation_config")
+@session_boundary
 async def configure_simulation(
     req: SimulationConfigRequest,
     x_simulation_session_id: Optional[str] = Header(default=None),
@@ -244,6 +298,8 @@ async def configure_simulation(
         session_id = _resolve_session_id(x_simulation_session_id)
         with simulation_sessions_lock:
             session = simulation_sessions.get(session_id)
+        if session is not None:
+            assert_execution_ready(session.simulation.controller)
         should_create = session is None
         if session is not None and req.enterprise_config is not None:
             current_signature = _enterprise_config_signature(
@@ -304,6 +360,7 @@ async def configure_simulation(
 
 
 @app.post("/runtime_checkpoint/save")
+@session_boundary
 def save_runtime_checkpoint(
     req: RuntimeCheckpointRequest,
     x_simulation_session_id: Optional[str] = Header(default=None),
@@ -363,12 +420,16 @@ def save_runtime_checkpoint(
 
 
 @app.post("/runtime_checkpoint/load")
+@session_boundary
 def load_runtime_checkpoint(
     req: RuntimeCheckpointRequest,
     x_simulation_session_id: Optional[str] = Header(default=None),
 ):
     """Restore a trusted runtime checkpoint into the requested session id."""
     session_id = _resolve_session_id(x_simulation_session_id)
+    previous = simulation_sessions.get(session_id)
+    if previous and has_pending_action(previous.simulation.controller):
+        raise HTTPException(status_code=409, detail="Old execution is still draining; checkpoint restore is deferred")
     checkpoint_path = _resolve_runtime_checkpoint_path(req.checkpoint_path)
     if not checkpoint_path.exists():
         raise HTTPException(status_code=404, detail=f"Checkpoint not found: {checkpoint_path}")
@@ -425,6 +486,7 @@ def load_runtime_checkpoint(
         raise HTTPException(status_code=400, detail=str(exc))
 
 @app.get("/market/external_demand")
+@session_boundary
 def get_external_demand(
     enterprise_id: Optional[str] = None,
     x_simulation_session_id: Optional[str] = Header(default=None),
@@ -445,6 +507,7 @@ def get_external_demand(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/simulation_context")
+@session_boundary
 def get_simulation_context(x_simulation_session_id: Optional[str] = Header(default=None)):
     """Gets the current simulation mode and transaction mode for Agent to enter a file to see the context."""
     try:
@@ -460,6 +523,7 @@ def get_simulation_context(x_simulation_session_id: Optional[str] = Header(defau
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/bullwhip")
+@session_boundary
 def get_bullwhip_metrics(x_simulation_session_id: Optional[str] = Header(default=None)):
     """A layer-by-sequence order-by-sequence magnification indicator for the acquisition of oxen whips."""
     try:
@@ -475,6 +539,7 @@ def get_bullwhip_metrics(x_simulation_session_id: Optional[str] = Header(default
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/state/json")
+@session_boundary
 def get_state_json(x_simulation_session_id: Optional[str] = Header(default=None)):
     """Get complete status in JSON format"""
     logger.debug("Received JSON state request")
@@ -494,6 +559,7 @@ def get_state_json(x_simulation_session_id: Optional[str] = Header(default=None)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/actions")
+@session_boundary
 def get_available_actions(x_simulation_session_id: Optional[str] = Header(default=None)):
     """Get a list of available business actions"""
     logger.debug("Received available actions request")
@@ -512,6 +578,7 @@ def get_available_actions(x_simulation_session_id: Optional[str] = Header(defaul
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/execute")
+@session_boundary
 async def execute_action(
     req: ExecuteRequest,
     x_simulation_session_id: Optional[str] = Header(default=None),
@@ -519,12 +586,41 @@ async def execute_action(
     """Receive and execute Atgent commands"""
     try:
         session = _get_session(_resolve_session_id(x_simulation_session_id))
-        result = await session.adapter.step(req.workflow, req.execute_type, req.enterprise_name, req.dept)
+        controller = session.simulation.controller
+        ledger = getattr(controller, "submission_receipts", None)
+        if ledger is None:
+            ledger = controller.submission_receipts = {}
+        identity = req.submission_id
+        fingerprint = hashlib.sha256(req.model_dump_json(exclude={"submission_id"}).encode()).hexdigest()
+        if identity:
+            if len(identity) > 160:
+                raise HTTPException(400, "Submission identity is too long")
+            previous = ledger.get(identity)
+            if previous:
+                if previous["fingerprint"] != fingerprint:
+                    raise HTTPException(409, "Submission identity was reused for a different proposal")
+                if previous["status"] != "completed":
+                    raise HTTPException(409, "EXECUTION_INDETERMINATE: submission has no final receipt")
+                return previous["output"]
+            ledger[identity] = {"fingerprint": fingerprint, "status": "pending"}
+        try:
+            result = await session.adapter.step(req.workflow, req.execute_type, req.enterprise_name, req.dept)
+        except BaseException:
+            if identity:
+                ledger[identity]["status"] = "indeterminate"
+            if not getattr(controller, "execution_quarantine", None):
+                controller.execution_quarantine = {"code": "EXECUTION_INDETERMINATE", "submission_id": identity}
+            raise
         logger.debug("Workflow executed successfully")
         output = {
             "result": result,
-            "current_day": str(session.simulation.controller.time_manager.get_day())
+            "current_day": str(session.simulation.controller.time_manager.get_day()),
+            "submission_id": identity,
+            "receipt_id": identity,
+            "execution_protocol": EXECUTION_PROTOCOL,
         }
+        if identity:
+            ledger[identity].update(status="completed", output=output)
         return output
     except HTTPException:
         raise
@@ -533,6 +629,7 @@ async def execute_action(
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/next_turn")
+@session_boundary
 async def advance_time(x_simulation_session_id: Optional[str] = Header(default=None)):
     """Move to the next business day."""
     logger.debug("Received advance time request")
@@ -555,6 +652,7 @@ async def advance_time(x_simulation_session_id: Optional[str] = Header(default=N
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/check_orders")
+@session_boundary
 async def check_orders(x_simulation_session_id: Optional[str] = Header(default=None)):
     """Validation of orders"""
     logger.debug("Received check orders request")
@@ -571,6 +669,7 @@ async def check_orders(x_simulation_session_id: Optional[str] = Header(default=N
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/statistics_orders")
+@session_boundary
 async def statistics_orders(x_simulation_session_id: Optional[str] = Header(default=None)):
     """Statistics on orders"""
     logger.debug("Received statistics orders request")
@@ -580,9 +679,37 @@ async def statistics_orders(x_simulation_session_id: Optional[str] = Header(defa
         return {
             "status": "success",
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error statistics orders: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/session/status")
+@session_boundary
+def session_status(x_simulation_session_id: Optional[str] = Header(default=None)):
+    session_id = _resolve_session_id(x_simulation_session_id)
+    with simulation_sessions_lock:
+        session = simulation_sessions.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Simulation session is not active")
+    controller = session.simulation.controller
+    return {"session_id": session_id, "execution_protocol": EXECUTION_PROTOCOL,
+            "pending_business_action": has_pending_action(controller),
+            "quarantine": _sanitize_json_payload(getattr(controller, "execution_quarantine", None))}
+
+
+@app.post("/session/close")
+@session_boundary
+def close_session(x_simulation_session_id: Optional[str] = Header(default=None)):
+    session_id = _resolve_session_id(x_simulation_session_id)
+    session = simulation_sessions.get(session_id)
+    if session and has_pending_action(session.simulation.controller):
+        raise HTTPException(status_code=409, detail="Execution is still draining; session remains quarantined")
+    with simulation_sessions_lock:
+        simulation_sessions.pop(session_id, None)
+    return {"status": "success", "session_id": session_id}
+
 
 @app.get("/health")
 def health_check():
@@ -590,8 +717,37 @@ def health_check():
     return {
         "status": "healthy",
         "service": "SupplyChain Simulation Server",
-        "version": "1.0"
+        "version": "2026.11.public.1",
+        "execution_protocol": EXECUTION_PROTOCOL,
+        "instance_id": INSTANCE_ID,
+        "deployment_mode": get_platform_access().mode
     }
+
+
+
+
+# The production viewer and the development proxy use the same result APIs.
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from starlette.middleware.gzip import GZipMiddleware
+from config.project_paths import PROJECT_ROOT
+
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+_frontend_dist = Path(os.getenv("SUPPLY_CHAIN_FRONTEND_DIST", str(PROJECT_ROOT / "visualization/dist")))
+if (_frontend_dist / "assets").is_dir():
+    app.mount("/assets", StaticFiles(directory=_frontend_dist / "assets"), name="viewer-assets")
+
+@app.get("/", include_in_schema=False)
+def viewer_index():
+    if (_frontend_dist / "index.html").is_file():
+        return FileResponse(_frontend_dist / "index.html")
+    return {"service":"SupplyChainAgent", "message":"Build visualization or use the development viewer", "release":"2026.11.public.1"}
+
+@app.get("/favicon.svg", include_in_schema=False)
+def viewer_icon():
+    icon = _frontend_dist / "favicon.svg"
+    if icon.is_file():return FileResponse(icon,media_type="image/svg+xml")
+    raise HTTPException(status_code=404, detail="Viewer icon unavailable")
 
 if __name__ == "__main__":
     logger.info("Starting SupplyChain Simulation Server on http://0.0.0.0:8000")
