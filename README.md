@@ -52,7 +52,7 @@ A public visitor website provides result viewing. New experiments require an ope
 
 ### 1. Download and Install
 
-The commands below use Bash and Unix-style virtual-environment paths. Use **Python 3.12** for the documented local setup; it was verified with Python 3.12.3, Node.js 18.19.1, and npm 9.2.0. The CI workflow also specifies Python 3.11 and Node.js 20. Install Python, Node.js/npm, and Git before proceeding.
+The commands below use Bash and Unix-style virtual-environment paths. Use **Python 3.12** for the documented local setup; it was verified with Python 3.12.3, Node.js 18.19.1, and npm 9.2.0. Install Python, Node.js/npm, and Git before proceeding.
 
 ```bash
 git clone --branch open-source --single-branch \
@@ -372,6 +372,8 @@ The default ORM store is `local_orm.sqlite`. Set `DATABASE_URL` to use PostgreSQ
 | [Interface and artifacts](docs/interface_and_artifacts.md) | Where to inspect outcomes and find generated files |
 
 ## Development and Troubleshooting
+
+Run verification locally after installing the project dependencies. Backend tests, frontend checks, and optional browser tests remain available through the commands below.
 
 ```bash
 # Run backend regression tests.

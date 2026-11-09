@@ -125,6 +125,6 @@ npm --prefix visualization run test:dev-boundary
 PYTHON_BIN=.venv/bin/python npm --prefix visualization run test:browser
 ```
 
-Browser checks start isolated visitor services with explicitly synthetic data and no model calls. They verify three viewport sizes, units, denied writes, chart enlargement/closing, and failure recovery for scripts, modules, catalogs, archives, and rendering exceptions. `BROWSER_TEST_OUTPUT` selects screenshot/log output. The [CI workflow](../.github/workflows/platform.yml) runs these checks alongside runtime/access/batch regressions.
+Browser checks start isolated visitor services with explicitly synthetic data and no model calls. They verify three viewport sizes, units, denied writes, chart enlargement/closing, and failure recovery for scripts, modules, catalogs, archives, and rendering exceptions. `BROWSER_TEST_OUTPUT` selects screenshot/log output. Run these checks locally alongside the runtime/access/batch regressions above.
 
 Use the [interface guide](interface_and_artifacts.md#loading-and-recovery) to interpret visible empty, loading, and error states. Use [experiment management](experiments.md) for private execution and [the scenario guides](configuration.md#scenario-guide-index) for mechanism-specific runs.
