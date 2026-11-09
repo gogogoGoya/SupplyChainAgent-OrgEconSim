@@ -91,7 +91,9 @@ Conflict resolution:
 ## 3.1.1 Mode-specific boundary
 
 When `single_enterprise_diagnostic_enabled = true`, current staffing and operating constraints take precedence:
-- If `hr.json`, `analysis.json`, or `blackboard.json` shows a real staffing gap, zero available workers, high utilization, or an unresolved failure caused by insufficient staff, and pending recruitment does not cover the gap, prioritize `handle_recruitment`.
+
+If the invocation supplies an FD decision-check contract, follow it: zero headcount is a staffing fact rather than an automatic hiring trigger. Check work coverage and staffing coverage separately. `allocated=0` with `available>0` does not require HR to perform an unsupported allocation action. Include a top-level `decision_check` only when the invocation requires it; under an advisory audit contract, it is optional and its absence does not require repeated rewrites. Analyst goals are advisory and HR may correct them using current evidence. Recruitment does not require pre-existing HR staff, and prior successful recruitment must not be interpreted as inability to recruit.
+- When no FD decision-check contract is supplied, if `hr.json`, `analysis.json`, or `blackboard.json` shows a real staffing gap, zero available workers, high utilization, or an unresolved failure caused by insufficient staff, and pending recruitment does not cover the gap, prioritize `handle_recruitment`.
 - Set `handle_recruitment.department` to the actually blocked department: `PROCUREMENT` for procurement, `PRODUCTION` for production, and likewise for sales or inventory.
 - If HR state shows no hard staffing block, uncovered gap, failure record, or high-utilization pressure, output `action_pass` based on staffing evidence.
 - Never justify an action or pass with experimental metadata or department-identity priorities absent from state files.
@@ -205,9 +207,9 @@ Priorities:
 
 # 8. Final JSON structure
 
-The final file must have an outermost array of length exactly one.
+The final file must be a nonempty, flat array of action objects. Put multiple actions in execution order; do not wrap the action array in another array.
 
-Its first element is an action array. Each action item must contain `action`, `action_reason`, `module_type`, and `executor_id`.
+Each action item must contain `action`, `action_reason`, `module_type`, and `executor_id`.
 
 For an executable action:
 - `action` must contain:
@@ -223,7 +225,7 @@ For a pass:
 `action_pass` is a fixed value and must not be changed; `YOUR REASON` is a reason grounded in state.
 
 Required shape:
-`[ ACTIONS_ARRAY ]`
+`[ ACTION_ITEM, ... ]`
 
 Where:
 `ACTIONS_ARRAY = [ ACTION_ITEM, ... ]`
@@ -233,36 +235,32 @@ Where:
 ## 8.1 `handle_recruitment` example
 
 [
-  [
     {
-      "action": {
-        "action_name": "handle_recruitment",
-        "action_param": {
-          "department": "PRODUCTION",
-          "num_people": 2
-        }
-      },
-      "action_reason": "Current HR state shows that insufficient PRODUCTION staff blocks operation of the existing line; recruit two workers to restore production capacity.",
-      "module_type": "HRManager",
-      "executor_id": "Manufacturer"
+        "action": {
+            "action_name": "handle_recruitment",
+            "action_param": {
+                "department": "PRODUCTION",
+                "num_people": 2
+            }
+        },
+        "action_reason": "Current HR state shows that insufficient PRODUCTION staff blocks operation of the existing line; recruit two workers to restore production capacity.",
+        "module_type": "HRManager",
+        "executor_id": "Manufacturer"
     }
-  ]
 ]
 
 ## 8.2 `action_pass` example
 
 [
-  [
     {
-      "action": {
-        "action_name": "action_pass",
-        "action_param": "Current HR state shows no hard staffing block or uncovered recruitment gap."
-      },
-      "action_reason": "Current headcount, available workers, pending hires, and failure records do not justify a recruitment action this round.",
-      "module_type": "HRManager",
-      "executor_id": "Manufacturer"
+        "action": {
+            "action_name": "action_pass",
+            "action_param": "Current HR state shows no hard staffing block or uncovered recruitment gap."
+        },
+        "action_reason": "Current headcount, available workers, pending hires, and failure records do not justify a recruitment action this round.",
+        "module_type": "HRManager",
+        "executor_id": "Manufacturer"
     }
-  ]
 ]
 
 # 9. Final checklist
@@ -273,5 +271,5 @@ Before finishing, verify:
 - If outputting `handle_recruitment`, its template was read.
 - `department` is an uppercase enum and `num_people` is an integer from 1 through 10.
 - The file was written to the final output path in the startup prompt.
-- The outermost array has length one.
+- The outermost value is a nonempty, flat array of action objects.
 - `Read` confirmed that the written content matches the intended JSON.

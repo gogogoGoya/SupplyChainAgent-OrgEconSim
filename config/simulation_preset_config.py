@@ -1,23 +1,4 @@
-"""
-Central configuration for the multi-enterprise supply-chain simulation.
-
-This module manages scenario-, runtime-, and organization-level defaults, including:
-- Base enterprise definitions
-- External demand series and round parameters
-- Agent, department, and production-line settings
-- Initialization and recurring daily actions
-- Daily system-injection rules
-- Automatic HR and inventory policy thresholds
-
-Configuration is organized as scenario packages:
-- `baseline_current` preserves the historical baseline for reproducibility.
-- `baseline_rebalanced` preserves a rebalanced comparison baseline.
-- `beer_game` remains as a legacy scenario identifier; its underlying demand mode is now named `scheduled_external_demand`.
-
-Scenario selection:
-- The default is `DEFAULT_ACTIVE_SCENARIO_ID`.
-- `SIMULATION_SCENARIO_ID` may override it at runtime.
-"""
+'\nCentral configuration for the multi-enterprise supply-chain simulation.\n\nThis module manages scenario-, runtime-, and organization-level defaults, including:\n- Base enterprise definitions\n- External demand series and round parameters\n- Agent, department, and production-line settings\n- Initialization and recurring daily actions\n- Daily system-injection rules\n- Automatic HR and inventory policy thresholds\n\nConfiguration is organized as scenario packages:\n- `baseline_current` preserves the historical baseline for reproducibility.\n- `baseline_rebalanced` preserves a rebalanced comparison baseline.\n- `beer_game` remains as a legacy scenario identifier; its underlying demand mode is now named `scheduled_external_demand`.\n\nScenario selection:\n- The default is `DEFAULT_ACTIVE_SCENARIO_ID`.\n- `SIMULATION_SCENARIO_ID` may override it at runtime.\n'
 
 import json
 import os
@@ -33,14 +14,14 @@ from config.environment_config import EnvironmentConfig
 SIMULATION_SCENARIO_ENV_VAR = "SIMULATION_SCENARIO_ID"
 DEFAULT_ACTIVE_SCENARIO_ID = "architecture_linear_chain_short"
 
-# Scheduled external-demand mode generates market orders from a scenario time series.
-# It was historically named `beer_game`, although the mode itself does not guarantee a bullwhip effect.
+
+
 MARKET_DEMAND_MODE_SCHEDULED_EXTERNAL = "scheduled_external_demand"
 LEGACY_MARKET_DEMAND_MODE_BEER_GAME = "beer_game"
 MARKET_DEMAND_MODE_ALIASES = {
     LEGACY_MARKET_DEMAND_MODE_BEER_GAME: MARKET_DEMAND_MODE_SCHEDULED_EXTERNAL,
 }
-# Retain the legacy import name; new code should prefer MARKET_DEMAND_MODE_SCHEDULED_EXTERNAL.
+
 MARKET_DEMAND_MODE_BEER_GAME = MARKET_DEMAND_MODE_SCHEDULED_EXTERNAL
 
 
@@ -49,15 +30,15 @@ def normalize_market_demand_mode(mode: str = None) -> str:
     if mode is None:
         return mode
     return MARKET_DEMAND_MODE_ALIASES.get(str(mode), str(mode))
-# Cobweb model: current supply responds to lagged price, while current price is determined by the demand curve.
+
 MARKET_DEMAND_MODE_COBWEB = "cobweb"
-# Shared-resource mode lets multiple enterprises draw from one resource pool, with degradation and governance enforced by the environment.
+
 MARKET_DEMAND_MODE_SHARED_RESOURCE = "shared_resource_market"
-# Herding-market mode exposes market activity and peer signals so enterprises can independently decide whether to expand production.
+
 MARKET_DEMAND_MODE_HERDING = "herding_market"
-# The main workflow uses a custom network whose enterprise `tier` values define supply-chain levels.
+
 DEFAULT_NETWORK_CONFIG_TEMPLATE = {"structure": "custom"}
-# Default model list for the multi-enterprise workflow. Enterprise order follows the shared Agent runtime configuration.
+
 DEFAULT_AGENT_MODEL_NAME_LIST = (
     list(EnvironmentConfig.DEFAULT_AGENT_MODEL_LIST)
     or ([EnvironmentConfig.DEFAULT_AGENT_MODEL] if EnvironmentConfig.DEFAULT_AGENT_MODEL else [])
@@ -89,7 +70,7 @@ DEFAULT_COBWEB_CONFIG_TEMPLATE = {
 DEFAULT_SHARED_RESOURCE_CONFIG_TEMPLATE = {
     "enabled": False,
     "resource_id": "shared_resource_pool",
-    "resource_label": "Shared Resource Pool",
+    "resource_label": 'Shared Resource Pool',
     "product_id": "resource_product",
     "target_enterprise_ids": [],
     "initial_stock_quantity": 12000.0,
@@ -176,7 +157,7 @@ SINGLE_ENTERPRISE_CASE_ALIASES = {
 
 SINGLE_ENTERPRISE_STATIC_COMMAND_ROOT = (
     Path(__file__).resolve().parents[1]
-    / "agent"
+    / 'agent'
     / "static_commands"
     / "single_enterprise"
 )
@@ -604,19 +585,19 @@ DEFAULT_ENTERPRISE_BLUEPRINTS = [
         "purchasable_materials_idList": ["Malt", "Hops", "Yeast"],
         "supplier_name_list": ["Upstream_Supplier"],
         "agent_departments": [
-            {"dept_id": "hr", "role": "HR", "name": "Human Resources", "skill_name": "hr", "type": "Auto"},
-            {"dept_id": "inventory", "role": "Inventory", "name": "Inventory Management", "skill_name": "inventory", "type": "Auto"},
+            {"dept_id": "hr", "role": "HR", "name": 'Human Resources', "skill_name": "hr", "type": "Auto"},
+            {"dept_id": "inventory", "role": "Inventory", "name": 'Inventory Management', "skill_name": "inventory", "type": "Auto"},
             {
                 "dept_id": "procurement",
                 "role": "Procurement",
-                "name": "Procurement Management",
+                "name": 'Procurement Management',
                 "skill_name": "procurement",
                 "type": "Agent",
             },
             {
                 "dept_id": "sales",
                 "role": "Sales",
-                "name": "Sales Management",
+                "name": 'Sales Management',
                 "skill_name": "seller",
                 "type": "Agent",
                 "need_trade": True,
@@ -633,19 +614,19 @@ DEFAULT_ENTERPRISE_BLUEPRINTS = [
         "salable_products_idList": ["beer"],
         "purchasable_materials_idList": ["Malt", "Hops", "Yeast"],
         "agent_departments": [
-            {"dept_id": "hr", "role": "HR", "name": "Human Resources", "skill_name": "hr", "type": "Auto"},
-            {"dept_id": "inventory", "role": "Inventory", "name": "Inventory Management", "skill_name": "inventory", "type": "Auto"},
+            {"dept_id": "hr", "role": "HR", "name": 'Human Resources', "skill_name": "hr", "type": "Auto"},
+            {"dept_id": "inventory", "role": "Inventory", "name": 'Inventory Management', "skill_name": "inventory", "type": "Auto"},
             {
                 "dept_id": "production",
                 "role": "Production",
-                "name": "Production Management",
+                "name": 'Production Management',
                 "skill_name": "production",
                 "type": "Agent",
             },
             {
                 "dept_id": "sales",
                 "role": "Sales",
-                "name": "Sales Management",
+                "name": 'Sales Management',
                 "skill_name": "seller",
                 "type": "Agent",
                 "need_trade": True,
@@ -653,7 +634,7 @@ DEFAULT_ENTERPRISE_BLUEPRINTS = [
             {
                 "dept_id": "procurement",
                 "role": "Procurement",
-                "name": "Procurement Management",
+                "name": 'Procurement Management',
                 "skill_name": "buyer",
                 "type": "Agent",
                 "need_trade": True,
@@ -670,12 +651,12 @@ DEFAULT_ENTERPRISE_BLUEPRINTS = [
         "salable_products_idList": ["beer"],
         "purchasable_materials_idList": ["beer"],
         "agent_departments": [
-            {"dept_id": "hr", "role": "HR", "name": "Human Resources", "skill_name": "hr", "type": "Auto"},
-            {"dept_id": "inventory", "role": "Inventory", "name": "Inventory Management", "skill_name": "inventory", "type": "Auto"},
+            {"dept_id": "hr", "role": "HR", "name": 'Human Resources', "skill_name": "hr", "type": "Auto"},
+            {"dept_id": "inventory", "role": "Inventory", "name": 'Inventory Management', "skill_name": "inventory", "type": "Auto"},
             {
                 "dept_id": "sales",
                 "role": "Sales",
-                "name": "Sales Management",
+                "name": 'Sales Management',
                 "skill_name": "seller",
                 "type": "Agent",
                 "need_trade": True,
@@ -683,7 +664,7 @@ DEFAULT_ENTERPRISE_BLUEPRINTS = [
             {
                 "dept_id": "procurement",
                 "role": "Procurement",
-                "name": "Procurement Management",
+                "name": 'Procurement Management',
                 "skill_name": "buyer",
                 "type": "Agent",
                 "need_trade": True,
@@ -700,19 +681,19 @@ DEFAULT_ENTERPRISE_BLUEPRINTS = [
         "salable_products_idList": ["beer"],
         "purchasable_materials_idList": ["beer"],
         "agent_departments": [
-            {"dept_id": "hr", "role": "HR", "name": "Human Resources", "skill_name": "hr", "type": "Auto"},
-            {"dept_id": "inventory", "role": "Inventory", "name": "Inventory Management", "skill_name": "inventory", "type": "Auto"},
+            {"dept_id": "hr", "role": "HR", "name": 'Human Resources', "skill_name": "hr", "type": "Auto"},
+            {"dept_id": "inventory", "role": "Inventory", "name": 'Inventory Management', "skill_name": "inventory", "type": "Auto"},
             {
                 "dept_id": "sales",
                 "role": "Sales",
-                "name": "Sales Management",
+                "name": 'Sales Management',
                 "skill_name": "sales",
                 "type": "Agent",
             },
             {
                 "dept_id": "procurement",
                 "role": "Procurement",
-                "name": "Procurement Management",
+                "name": 'Procurement Management',
                 "skill_name": "buyer",
                 "type": "Agent",
                 "need_trade": True,
@@ -733,12 +714,12 @@ DIRECT_DISTRIBUTION_EXPERIMENT_BLUEPRINTS = [
         "purchasable_materials_idList": [],
         "supplier_name_list": [],
         "agent_departments": [
-            {"dept_id": "hr", "role": "HR", "name": "Human Resources", "skill_name": "hr", "type": "Auto"},
-            {"dept_id": "inventory", "role": "Inventory", "name": "Inventory Management", "skill_name": "inventory", "type": "Auto"},
+            {"dept_id": "hr", "role": "HR", "name": 'Human Resources', "skill_name": "hr", "type": "Auto"},
+            {"dept_id": "inventory", "role": "Inventory", "name": 'Inventory Management', "skill_name": "inventory", "type": "Auto"},
             {
                 "dept_id": "sales",
                 "role": "Sales",
-                "name": "Sales Management",
+                "name": 'Sales Management',
                 "skill_name": "seller",
                 "type": "Agent",
                 "need_trade": True,
@@ -756,12 +737,12 @@ DIRECT_DISTRIBUTION_EXPERIMENT_BLUEPRINTS = [
         "purchasable_materials_idList": ["beer"],
         "supplier_name_list": [],
         "agent_departments": [
-            {"dept_id": "hr", "role": "HR", "name": "Human Resources", "skill_name": "hr", "type": "Auto"},
-            {"dept_id": "inventory", "role": "Inventory", "name": "Inventory Management", "skill_name": "inventory", "type": "Auto"},
+            {"dept_id": "hr", "role": "HR", "name": 'Human Resources', "skill_name": "hr", "type": "Auto"},
+            {"dept_id": "inventory", "role": "Inventory", "name": 'Inventory Management', "skill_name": "inventory", "type": "Auto"},
             {
                 "dept_id": "sales",
                 "role": "Sales",
-                "name": "Sales Management",
+                "name": 'Sales Management',
                 "skill_name": "seller",
                 "type": "Agent",
                 "need_trade": True,
@@ -769,7 +750,7 @@ DIRECT_DISTRIBUTION_EXPERIMENT_BLUEPRINTS = [
             {
                 "dept_id": "procurement",
                 "role": "Procurement",
-                "name": "Procurement Management",
+                "name": 'Procurement Management',
                 "skill_name": "buyer",
                 "type": "Agent",
                 "need_trade": True,
@@ -787,12 +768,12 @@ DIRECT_DISTRIBUTION_EXPERIMENT_BLUEPRINTS = [
         "purchasable_materials_idList": ["beer"],
         "supplier_name_list": [],
         "agent_departments": [
-            {"dept_id": "hr", "role": "HR", "name": "Human Resources", "skill_name": "hr", "type": "Auto"},
-            {"dept_id": "inventory", "role": "Inventory", "name": "Inventory Management", "skill_name": "inventory", "type": "Auto"},
+            {"dept_id": "hr", "role": "HR", "name": 'Human Resources', "skill_name": "hr", "type": "Auto"},
+            {"dept_id": "inventory", "role": "Inventory", "name": 'Inventory Management', "skill_name": "inventory", "type": "Auto"},
             {
                 "dept_id": "sales",
                 "role": "Sales",
-                "name": "Sales Management",
+                "name": 'Sales Management',
                 "skill_name": "seller",
                 "type": "Agent",
                 "need_trade": True,
@@ -800,7 +781,7 @@ DIRECT_DISTRIBUTION_EXPERIMENT_BLUEPRINTS = [
             {
                 "dept_id": "procurement",
                 "role": "Procurement",
-                "name": "Procurement Management",
+                "name": 'Procurement Management',
                 "skill_name": "buyer",
                 "type": "Agent",
                 "need_trade": True,
@@ -818,19 +799,19 @@ DIRECT_DISTRIBUTION_EXPERIMENT_BLUEPRINTS = [
         "purchasable_materials_idList": ["beer"],
         "supplier_name_list": [],
         "agent_departments": [
-            {"dept_id": "hr", "role": "HR", "name": "Human Resources", "skill_name": "hr", "type": "Auto"},
-            {"dept_id": "inventory", "role": "Inventory", "name": "Inventory Management", "skill_name": "inventory", "type": "Auto"},
+            {"dept_id": "hr", "role": "HR", "name": 'Human Resources', "skill_name": "hr", "type": "Auto"},
+            {"dept_id": "inventory", "role": "Inventory", "name": 'Inventory Management', "skill_name": "inventory", "type": "Auto"},
             {
                 "dept_id": "sales",
                 "role": "Sales",
-                "name": "Sales Management",
+                "name": 'Sales Management',
                 "skill_name": "sales",
                 "type": "Agent",
             },
             {
                 "dept_id": "procurement",
                 "role": "Procurement",
-                "name": "Procurement Management",
+                "name": 'Procurement Management',
                 "skill_name": "buyer",
                 "type": "Agent",
                 "need_trade": True,
@@ -851,19 +832,19 @@ COBWEB_CLEAN_ENTERPRISE_BLUEPRINTS = [
         "purchasable_materials_idList": [],
         "supplier_name_list": [],
         "agent_departments": [
-            {"dept_id": "hr", "role": "HR", "name": "Human Resources", "skill_name": "hr", "type": "Auto"},
-            {"dept_id": "inventory", "role": "Inventory", "name": "Inventory Management", "skill_name": "inventory", "type": "Auto"},
+            {"dept_id": "hr", "role": "HR", "name": 'Human Resources', "skill_name": "hr", "type": "Auto"},
+            {"dept_id": "inventory", "role": "Inventory", "name": 'Inventory Management', "skill_name": "inventory", "type": "Auto"},
             {
                 "dept_id": "production",
                 "role": "Production",
-                "name": "Production Management",
+                "name": 'Production Management',
                 "skill_name": "production",
                 "type": "Agent",
             },
             {
                 "dept_id": "sales",
                 "role": "Sales",
-                "name": "Sales Management",
+                "name": 'Sales Management',
                 "skill_name": "sales",
                 "type": "Agent",
             },
@@ -877,47 +858,47 @@ HERDING_SENSOR_ENTERPRISE_IDS = ["Sensor_A", "Sensor_B", "Sensor_C", "Sensor_D"]
 COMMONS_STRATEGY_PROFILES = {
     "balanced_growth": {
         "profile_id": "balanced_growth",
-        "label": "Balanced growth",
+        "label": 'Balanced growth',
         "acquisition_bias": "moderate_above_sustainable_share",
         "preferred_acquisition_band": [120, 180],
         "growth_priority": 0.65,
         "profit_priority": 0.70,
         "resource_risk_sensitivity": 0.45,
         "peer_response": "match_market_pressure_without_strictly_copying_peers",
-        "decision_note": "When ungovernable and profit space is positive, it can be slightly higher than a single sustainable share, provided that resource risk is specified.",
+        "decision_note": 'When ungovernable and profit space is positive, it can be slightly higher than a single sustainable share, provided that resource risk is specified.',
     },
     "high_growth_competitive": {
         "profile_id": "high_growth_competitive",
-        "label": "High-growth competitive",
+        "label": 'High-growth competitive',
         "acquisition_bias": "aggressive_above_sustainable_share",
         "preferred_acquisition_band": [220, 360],
         "growth_priority": 0.95,
         "profit_priority": 0.92,
         "resource_risk_sensitivity": 0.18,
         "peer_response": "respond_to_peer_acquisition_with_expansion_or_maintained_high_output",
-        "decision_note": "Priority is given to maintaining high resource/product acquisition schemes when unsanctioned and when the order/profit pressure is clear; resource risk is an explanatory factor rather than a rigid indent constraint.",
+        "decision_note": 'Priority is given to maintaining high resource/product acquisition schemes when unsanctioned and when the order/profit pressure is clear; resource risk is an explanatory factor rather than a rigid indent constraint.',
     },
     "conservative_resilience": {
         "profile_id": "conservative_resilience",
-        "label": "Steady resilience.",
+        "label": 'Steady resilience.',
         "acquisition_bias": "near_sustainable_share",
         "preferred_acquisition_band": [90, 130],
         "growth_priority": 0.45,
         "profit_priority": 0.60,
         "resource_risk_sensitivity": 0.75,
         "peer_response": "avoid_chasing_peers_when_resource_quality_declines",
-        "decision_note": "Greater emphasis is placed on the quality of resources and on long-term effective outputs, and when the quality of resources is declining it tends to shrink or to maintain low growth.",
+        "decision_note": 'Greater emphasis is placed on the quality of resources and on long-term effective outputs, and when the quality of resources is declining it tends to shrink or to maintain low growth.',
     },
     "opportunistic_follower": {
         "profile_id": "opportunistic_follower",
-        "label": "Opportunity Follower",
+        "label": 'Opportunity Follower',
         "acquisition_bias": "peer_sensitive_above_sustainable_share",
         "preferred_acquisition_band": [120, 210],
         "growth_priority": 0.70,
         "profit_priority": 0.80,
         "resource_risk_sensitivity": 0.40,
         "peer_response": "increase_acquisition_when_peers_keep_high_acquisition",
-        "decision_note": "If a partner continues to have high levels of access and his/her own profits remain positive, he/she tends to follow higher levels of access to avoid falling behind in market share.",
+        "decision_note": 'If a partner continues to have high levels of access and his/her own profits remain positive, he/she tends to follow higher levels of access to avoid falling behind in market share.',
     },
 }
 
@@ -925,30 +906,30 @@ COMMONS_STRATEGY_PROFILES = {
 HERDING_STRATEGY_PROFILES = {
     "trend_chaser": {
         "profile_id": "trend_chaser",
-        "label": "Trends Follower",
+        "label": 'Trends Follower',
         "market_heat_sensitivity": 0.92,
         "peer_signal_sensitivity": 0.88,
         "inventory_risk_sensitivity": 0.30,
         "cash_risk_sensitivity": 0.35,
-        "decision_note": "When there is a strong signal of expansion in the market heat and contract industry, there is a tendency to follow it quickly to gain market share.",
+        "decision_note": 'When there is a strong signal of expansion in the market heat and contract industry, there is a tendency to follow it quickly to gain market share.',
     },
     "balanced_follower": {
         "profile_id": "balanced_follower",
-        "label": "Balance Follower",
+        "label": 'Balance Follower',
         "market_heat_sensitivity": 0.70,
         "peer_signal_sensitivity": 0.62,
         "inventory_risk_sensitivity": 0.50,
         "cash_risk_sensitivity": 0.50,
-        "decision_note": "A summary of the heat and trade of the market will be consulted, but the increase will need to be controlled in combination with real orders, stock and cash pressure.",
+        "decision_note": 'A summary of the heat and trade of the market will be consulted, but the increase will need to be controlled in combination with real orders, stock and cash pressure.',
     },
     "cautious_validator": {
         "profile_id": "cautious_validator",
-        "label": "Precautionary Authentication Type",
+        "label": 'Precautionary Authentication Type',
         "market_heat_sensitivity": 0.48,
         "peer_signal_sensitivity": 0.38,
         "inventory_risk_sensitivity": 0.75,
         "cash_risk_sensitivity": 0.70,
-        "decision_note": "Increased emphasis is placed on backlogs, cash pressures and real orders, and careful validation of market heat and industry signals is maintained.",
+        "decision_note": 'Increased emphasis is placed on backlogs, cash pressures and real orders, and careful validation of market heat and industry signals is maintained.',
     },
 }
 
@@ -957,7 +938,7 @@ def _build_herding_sensor_enterprise_blueprints(
     strategy_profiles_by_enterprise: Dict[str, Dict[str, Any]] = None,
     default_strategy_profile: Dict[str, Any] = None,
 ) -> List[Dict[str, Any]]:
-    """The tectonic sheep effect parallels the enterprise blueprint; the strategy is entered only as the Agent preference."""
+    """Build parallel enterprise blueprints for herding; strategy profiles express Agent preferences."""
     strategy_profiles_by_enterprise = strategy_profiles_by_enterprise or {}
     default_strategy_profile = default_strategy_profile or HERDING_STRATEGY_PROFILES["balanced_follower"]
     blueprints = []
@@ -1068,7 +1049,7 @@ DEFAULT_SMART_SENSOR_RECIPE = {
 SINGLE_ENTERPRISE_FINANCE_AGENT_DEPARTMENT = {
     "dept_id": "finance",
     "role": "Finance",
-    "name": "Financial diagnosis",
+    "name": 'Financial diagnosis',
     "skill_name": "finance",
     "type": "Agent",
 }
@@ -1508,10 +1489,10 @@ def _build_enterprise_configs_from_specs(enterprise_specs: List[Dict[str, Any]])
     return enterprise_configs
 
 
-# multi-enterpriseAgent side of the fixed organization.
-# Scope of use:
+
+
 # - `MultiEnterpriseAgentManager.build_demo_specs()`
-# - Each subsequent parameter will decide which Auto / Agent parameter is involved accordingly.
+
 def _build_agent_enterprise_layout_from_specs(enterprise_specs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Agent enterprise/department from interprise specs."""
     layout: List[Dict[str, Any]] = []
@@ -1956,7 +1937,7 @@ def _build_herding_experiment_policy(
     signal_usage: str = "market_expectation_reference_not_command",
     allow_raw_peer_files: bool = False,
 ) -> Dict[str, Any]:
-    """A description of the experimental strategy for the construction of the sheep herd effect Agent side."""
+    """Build the Agent-side herding experiment policy."""
     return {
         "enabled": bool(enabled),
         "target_enterprise_ids": list(target_enterprise_ids or []),
@@ -2007,7 +1988,7 @@ def _build_cobweb_enterprise_guidance_policy(
     forbid_minimum_batch_targets: bool = True,
     forbid_capacity_activation_targets: bool = True,
 ) -> Dict[str, Any]:
-    """The enterprise side-direction strategy for the construction of a spider web is used to lower the target priority of non-spread web production."""
+    """Build cobweb guidance that lowers the priority of production targets unrelated to the cobweb mechanism."""
     return {
         "enabled": bool(enabled),
         "target_enterprise_ids": list(target_enterprise_ids or []),
@@ -2947,8 +2928,8 @@ SCENARIO_CONFIGS = {
     "baseline_current": {
         "meta": {
             "scenario_id": "baseline_current",
-            "name": "Historical baseline",
-            "summary": "Retention of demand, inventory, warehouse capacity and automatic strategies for replaying and comparison.",
+            "name": 'Historical baseline',
+            "summary": 'Preserve historical demand, inventory, warehouse capacity, and automatic policies for replay and comparison.',
         },
         "simulation": {
             "service_total_steps": 10,
@@ -3113,8 +3094,8 @@ SCENARIO_CONFIGS = {
     "baseline_rebalanced": {
         "meta": {
             "scenario_id": "baseline_rebalanced",
-            "name": "Rebalance the baseline landscape",
-            "summary": "Compressed stocks with warehouse capacity, increased demand scale, tightening the Auto threshold, allowing replenishment and missing signals to enter the main link more realistically.",
+            "name": 'Rebalanced baseline',
+            "summary": 'Reduce inventory and warehouse capacity, increase demand, and tighten automatic replenishment thresholds to expose replenishment needs and shortage signals.',
         },
         "simulation": {
             "service_total_steps": 20,
@@ -3291,8 +3272,8 @@ SCENARIO_CONFIGS = {
     "beer_game": {
         "meta": {
             "scenario_id": "beer_game",
-            "name": "It's official.",
-            "summary": "Based on a rebalancing baseline, the most upstream Supplier ' s reasonable retention capacity is enhanced, with the oxlash effect coming more from enterprise business decision-making than from the early start.",
+            "name": "Beer Game: Bullwhip Effect",
+            "summary": "Increase upstream supplier capacity relative to the rebalanced baseline to study how enterprise operating decisions shape demand amplification beyond startup constraints.",
         },
         "simulation": {
             "service_total_steps": 20,
@@ -3498,8 +3479,8 @@ SCENARIO_CONFIGS = {
     "beer_game_direct_distribution_experiment": {
         "meta": {
             "scenario_id": "beer_game_direct_distribution_experiment",
-            "name": "Simplified version of the distribution chain beer game experiment Group",
-            "summary": "Remove the traditional Supplier/Manufacturer production procurement chain, preserve the four-storey distribution chain and terminal external demand, and simulate a more direct distribution chain whipping effect with near-unlimited top-level stocks.",
+            "name": 'Beer Game: Direct Distribution Chain',
+            "summary": 'Use a four-tier distribution chain with external customer demand and near-unlimited upstream inventory to study demand amplification without supplier and manufacturer production stages.',
         },
         "simulation": {
             "service_total_steps": 20,
@@ -3667,8 +3648,8 @@ SCENARIO_CONFIGS = {
     "credit_constraint_experiment": {
         "meta": {
             "scenario_id": "credit_constraint_experiment",
-            "name": "Cash and Letter-Constraint Transmitting Experiment Group",
-            "summary": "Retain the main chain structure beer_game and observe how financial constraints can be passed to replenishment, fulfillment, Backlog and profit by tightening initial cash, top-level credit and stock buffers.",
+            "name": 'Cash and Credit Constraint Propagation',
+            "summary": 'Retain the beer-game supply chain and tighten initial cash, upstream credit, and inventory buffers to observe effects on replenishment, fulfillment, backlog, and profit.',
         },
         "simulation": {
             "service_total_steps": 20,
@@ -4115,7 +4096,7 @@ def _build_herding_sensor_enterprise_bundle(
     default_strategy_profile: Dict[str, Any] = None,
     initial_capital: int = 260000,
 ) -> Dict[str, Any]:
-    """Parallel sensors enterprise for the construction of the sheep effect scenario."""
+    """Build parallel sensor enterprises for the herding scenario."""
     sensor_ids = list(HERDING_SENSOR_ENTERPRISE_IDS)
     return _build_scenario_enterprise_bundle(
         initial_capitals={enterprise_id: int(initial_capital) for enterprise_id in sensor_ids},
@@ -4621,8 +4602,8 @@ def _build_architecture_validation_scenario(
 def _build_architecture_linear_chain_scenario() -> Dict[str, Any]:
     return _build_architecture_validation_scenario(
         scenario_id="architecture_linear_chain_short",
-        name="Structure complexity validation: linear chain industrial sprinting",
-        summary="RawSupplier - > Componentmaker - > FinalAssembler - > Retailer for the certification of demand, procurement, production and sales along the single chain.",
+        name="Topology Validation: Linear Chain",
+        summary="Trace demand, procurement, production, and sales through RawSupplier -> ComponentMaker -> FinalAssembler -> Retailer.",
         enterprise_ids=ARCHITECTURE_LINEAR_ENTERPRISE_IDS,
         enterprise_blueprints=ARCHITECTURE_LINEAR_BLUEPRINTS,
         demand_series=[24, 26, 28, 30, 32, 34, 36, 38],
@@ -4706,8 +4687,8 @@ def _build_architecture_linear_chain_scenario() -> Dict[str, Any]:
 def _build_architecture_branching_assembly_scenario() -> Dict[str, Any]:
     return _build_architecture_validation_scenario(
         scenario_id="architecture_branching_assembly_short",
-        name="Structure complexity verification: branch assembly and sprinting",
-        summary="Three tier0 component suppliers gathered at Brewery Assembler and were then sold to external markets by Retailer to validate multi-upstream branch procurement and assembly bottlenecks interpretation.",
+        name="Topology Validation: Branching Assembly",
+        summary="Three upstream suppliers feed BreweryAssembler, followed by Retailer and external customers, to test procurement across branches and assembly bottlenecks.",
         enterprise_ids=ARCHITECTURE_BRANCHING_ENTERPRISE_IDS,
         enterprise_blueprints=ARCHITECTURE_BRANCHING_BLUEPRINTS,
         demand_series=[24, 28, 32, 36, 40, 42, 44, 45],
@@ -4780,8 +4761,8 @@ def _build_architecture_branching_assembly_scenario() -> Dict[str, Any]:
 def _build_architecture_mesh_multi_source_scenario() -> Dict[str, Any]:
     return _build_architecture_validation_scenario(
         scenario_id="architecture_mesh_multi_source_short",
-        name="Structure complexity validation: quasi-network multi-source short run",
-        summary="Multiple raw material suppliers, two parallel Brewery, one distribution hub and two distribution channels form quasi-network structures to validate multi-source procurement, alternative pathways and transaction diversion.",
+        name="Topology Validation: Multiple Supply Paths",
+        summary="Multiple raw-material suppliers, two parallel manufacturers, a distribution hub, and two sales channels support tests of procurement from multiple sources, alternative routes, and transaction routing.",
         enterprise_ids=ARCHITECTURE_MESH_ENTERPRISE_IDS,
         enterprise_blueprints=ARCHITECTURE_MESH_BLUEPRINTS,
         demand_series=[18, 20, 24, 26, 28, 30, 32, 34],
@@ -4931,14 +4912,14 @@ COMMONS_COLLAPSE_DIFFERENTIATED_STRATEGY_PROFILES = {
         "preferred_acquisition_band": [120, 200],
         "growth_priority": 0.58,
         "resource_risk_sensitivity": 0.62,
-        "decision_note": "The collapse experiment remained relatively robust, but allowed higher than single sustainable reference under high-profit and peer pressure.",
+        "decision_note": 'The collapse experiment remained relatively robust, but allowed higher than single sustainable reference under high-profit and peer pressure.',
     },
     "Miner_B": {
         **COMMONS_STRATEGY_PROFILES["balanced_growth"],
         "preferred_acquisition_band": [160, 260],
         "growth_priority": 0.76,
         "resource_risk_sensitivity": 0.36,
-        "decision_note": "In the collapse experiment, growth was even, but short-term profits and order pressures could drive them significantly above a single sustainable reference.",
+        "decision_note": 'In the collapse experiment, growth was even, but short-term profits and order pressures could drive them significantly above a single sustainable reference.',
     },
     "Miner_C": COMMONS_STRATEGY_PROFILES["high_growth_competitive"],
     "Miner_D": {
@@ -4946,7 +4927,7 @@ COMMONS_COLLAPSE_DIFFERENTIATED_STRATEGY_PROFILES = {
         "preferred_acquisition_band": [180, 300],
         "growth_priority": 0.82,
         "resource_risk_sensitivity": 0.28,
-        "decision_note": "It is easier to follow high levels of peer acquisition in collapse-reducing experiments to avoid falling behind in resource competition.",
+        "decision_note": 'It is easier to follow high levels of peer acquisition in collapse-reducing experiments to avoid falling behind in resource competition.',
     },
 }
 
@@ -4964,10 +4945,9 @@ SCENARIO_CONFIGS.update({
     "architecture_mesh_multi_source_short": _build_architecture_mesh_multi_source_scenario(),
     "herding_baseline_peer_visible": _build_herding_scenario(
         scenario_id="herding_baseline_peer_visible",
-        name="Sheep Effects Baseline Experiment: Summary of market heat and industry",
+        name='Herding Effect: Peer Signals Visible',
         summary=(
-            "Four intelligent sensors enterprise face the same market heat signals and can observe the summary of the industry ' s production after the environmental end convergence;"
-            "It is used to verify whether Agent has developed a synchronized expansion, overproduction and subsequent operating pressure, guided by non-order signals."
+            'Four sensor enterprises observe the same market heat and aggregated peer-production summaries. Observe whether non-command signals lead to synchronized expansion, overproduction and subsequent operating pressure.'
         ),
         herding_config=_build_herding_config(
             product_id="smart_sensor",
@@ -4980,10 +4960,9 @@ SCENARIO_CONFIGS.update({
     ),
     "herding_no_peer_visibility": _build_herding_scenario(
         scenario_id="herding_no_peer_visibility",
-        name="Sheep Effects Comparison Experiment: Only market heat is visible",
+        name='Herding Effect: Peer Signals Hidden',
         summary=(
-            "Four smart sensors enterprise face the same market heat and real demand, but do not expose the contract industry production summary;"
-            "For cross-checking to verify whether the synchronous expansion is mainly derived from visible signals from the industry."
+            'Four sensor enterprises share market heat and real demand without aggregated peer-production summaries, providing a visibility comparison for synchronized expansion.'
         ),
         herding_config=_build_herding_config(
             product_id="smart_sensor",
@@ -4996,11 +4975,11 @@ SCENARIO_CONFIGS.update({
     ),
     "commons_mining_baseline": _build_commons_mining_scenario(
         scenario_id="commons_mining_baseline",
-        name="Baseline experiment on sharing resources for common-earth tragedies",
-        summary="enterprise Common use of shared copper ore pools for four resource acquisition; no governance constraints to observe whether local best practices lead to resource degradation.",
+        name='Tragedy of the Commons: Shared Resource Baseline',
+        summary='Four enterprises extract from a shared copper resource pool without governance constraints to study how individual operating decisions affect resource depletion.',
         shared_resource_config=_build_shared_resource_config(
             resource_id="shared_copper_deposit",
-            resource_label="Shared copper pool",
+            resource_label='Shared copper pool',
             product_id="copper_ore",
             target_enterprise_ids=["Miner_A", "Miner_B", "Miner_C", "Miner_D"],
             initial_stock_quantity=12000,
@@ -5018,10 +4997,9 @@ SCENARIO_CONFIGS.update({
     ),
     "commons_mining_collapse_baseline_uniform": _build_commons_mining_scenario(
         scenario_id="commons_mining_collapse_baseline_uniform",
-        name="Ungoverned Commons Stress Test: Shared High-Growth Trend",
+        name='Ungoverned Commons Stress Test: Shared High-Growth Trend',
         summary=(
-            "Four resource acquisition enterprise uses the same high-growth competitive business orientation; the pool is more vulnerable and has higher short-term profits."
-            "To observe whether homogeneity enterprise can jointly push up access and accelerate resource degradation under unsanitary conditions."
+            'Four resource enterprises share a high-growth competitive profile, with a fragile resource pool and high short-term returns; observe collective acquisition and resource degradation without governance.'
         ),
         shared_resource_config=_build_commons_mining_collapse_resource_config(),
         shared_resource_governance_policy=_build_shared_resource_governance_policy(
@@ -5034,10 +5012,9 @@ SCENARIO_CONFIGS.update({
     ),
     "commons_mining_collapse_baseline_differentiated": _build_commons_mining_scenario(
         scenario_id="commons_mining_collapse_baseline_differentiated",
-        name="Ungoverned Commons Stress Test: Divergent Enterprise Trends",
+        name='Ungoverned Commons Stress Test: Divergent Enterprise Trends',
         summary=(
-            "enterprise for four resource acquisitions using a robust, balanced, high growth and opportunity-driven orientation; more vulnerable and more profitable in the short term."
-            "It's used to see how different Agent business preferences can together lead to a predatory resource degradation."
+            'Four resource enterprises use conservative, balanced, high-growth and opportunity-following profiles; observe how different preferences jointly create competitive resource degradation.'
         ),
         shared_resource_config=_build_commons_mining_collapse_resource_config(),
         shared_resource_governance_policy=_build_shared_resource_governance_policy(
@@ -5050,10 +5027,9 @@ SCENARIO_CONFIGS.update({
     ),
     "commons_mining_financial_damage_baseline": _build_commons_mining_scenario(
         scenario_id="commons_mining_financial_damage_baseline",
-        name="Ungoverned Commons Stress Test: Financial-Loss Pressure",
+        name='Ungoverned Commons Stress Test: Financial-Loss Pressure',
         summary=(
-            "Reducing resource resilience and unit prices and increasing unit acquisition costs based on differentiated business preferences;"
-            "For the purpose of observing whether the collapse of resources is further transmitted to enterprise a significant loss of cash and profits."
+            'Reduce resource resilience and sale prices while raising extraction costs to observe whether resource collapse propagates into cash and profit losses.'
         ),
         shared_resource_config=_build_commons_mining_financial_damage_resource_config(),
         shared_resource_governance_policy=_build_shared_resource_governance_policy(
@@ -5075,8 +5051,8 @@ SCENARIO_CONFIGS["commons_mining_collapse_baseline"]["meta"]["scenario_id"] = "c
 SCENARIO_CONFIGS.update({
     "cobweb_convergent": _build_cobweb_scenario(
         scenario_id="cobweb_convergent",
-        name="Convergent Cobweb",
-        summary="The supply-curve slope is lower than the demand-curve slope, so price and quantity oscillations contract toward equilibrium.",
+        name='Convergent Cobweb',
+        summary='The supply-curve slope is lower than the demand-curve slope, so price and quantity oscillations contract toward equilibrium.',
         cobweb_config=_build_cobweb_config(
             stability_label="convergent",
             initial_price=280,
@@ -5092,8 +5068,8 @@ SCENARIO_CONFIGS.update({
     ),
     "cobweb_neutral": _build_cobweb_scenario(
         scenario_id="cobweb_neutral",
-        name="Neutral Cobweb",
-        summary="Supply- and demand-curve slopes are similar, so prices and quantities cycle around equilibrium with approximately constant amplitude.",
+        name='Neutral Cobweb',
+        summary='Supply- and demand-curve slopes are similar, so prices and quantities cycle around equilibrium with approximately constant amplitude.',
         cobweb_config=_build_cobweb_config(
             stability_label="neutral",
             initial_price=300,
@@ -5109,8 +5085,8 @@ SCENARIO_CONFIGS.update({
     ),
     "cobweb_divergent": _build_cobweb_scenario(
         scenario_id="cobweb_divergent",
-        name="The spider web model spreads the experiment.",
-        summary="The supply curve is tilted more than the demand curve, the price and quantity deviations are balanced and the shock is magnified within the upper and lower bounds.",
+        name='Divergent Cobweb',
+        summary='The supply-response slope exceeds the demand slope, so deviations in price and quantity from equilibrium can grow within the configured bounds.',
         cobweb_config=_build_cobweb_config(
             stability_label="divergent",
             initial_price=280,
@@ -5230,10 +5206,10 @@ def _build_long_horizon_evolution_scenario() -> Dict[str, Any]:
     scenario = deepcopy(SCENARIO_CONFIGS["beer_game"])
     scenario["meta"] = {
         "scenario_id": "long_horizon_evolution",
-        "name": "multi-enterprise Continuous evolution long run",
+        "name": "Long-Horizon Enterprise Evolution",
         "summary": (
-            "The Supplier-Manufacturer-Distributor-Retailer level 4 supply relationship is maintained."
-            "Testing Agent ' s long-term business, identification and correction capacity with stable demand and phased external cost/policy changes."
+            "A four-tier Supplier-Manufacturer-Distributor-Retailer chain operates over 200 rounds. "
+            "Study sustained operations, shock recognition, and corrective responses under baseline demand cycles and phased external changes."
         ),
         "experiment_family": "long_horizon_evolution",
     }
@@ -5714,7 +5690,7 @@ PROFIT_OBJECTIVE_VARIANT_SPECS = {
             "inventory_cost_control": 0.14,
             "risk_buffer": 0.06,
         },
-        "notes": "C3; observe whether the profit/cash/service level target smooths demand shocks and replenishment fluctuations.",
+        "notes": 'C3; observe whether the profit/cash/service level target smooths demand shocks and replenishment fluctuations.',
     },
     "herding_baseline_peer_visible": {
         "scenario_id": "herding_peer_visible_profit_objective",
@@ -5725,7 +5701,7 @@ PROFIT_OBJECTIVE_VARIANT_SPECS = {
             "inventory_cost_control": 0.16,
             "risk_buffer": 0.06,
         },
-        "notes": "Sheep effect C3; a business summary is still available, but Agent decides whether to follow with profit and stock risk constraints.",
+        "notes": 'Herding C3: aggregated peer-production summaries remain visible; agents decide how to use them while balancing profit and inventory risk.',
     },
     "herding_no_peer_visibility": {
         "scenario_id": "herding_no_peer_visibility_profit_objective",
@@ -5736,7 +5712,7 @@ PROFIT_OBJECTIVE_VARIANT_SPECS = {
             "inventory_cost_control": 0.14,
             "risk_buffer": 0.06,
         },
-        "notes": "The Sheep Effects C3 Contrast; Open Operations Decision without a summary of the work and with a profit objective.",
+        "notes": 'Herding C3 visibility comparison: agents operate under profit objectives without aggregated peer-production summaries.',
     },
     "commons_mining_collapse_baseline_differentiated": {
         "scenario_id": "commons_mining_profit_objective",
@@ -5748,7 +5724,7 @@ PROFIT_OBJECTIVE_VARIANT_SPECS = {
             "resource_sustainability": 0.20,
             "risk_buffer": 0.06,
         },
-        "notes": "Commons C3 configuration for observing whether long-term profit and resource-sustainability objectives mitigate over-extraction.",
+        "notes": 'Commons C3 configuration for observing whether long-term profit and resource-sustainability objectives mitigate over-extraction.',
     },
     "cobweb_convergent": {
         "scenario_id": "cobweb_convergent_profit_objective",
@@ -5759,7 +5735,7 @@ PROFIT_OBJECTIVE_VARIANT_SPECS = {
             "production_adjustment_stability": 0.12,
             "price_risk_buffer": 0.08,
         },
-        "notes": "Convergent cobweb C3 exploratory configuration; excluded from the primary comparison.",
+        "notes": 'Convergent cobweb C3 exploratory configuration; excluded from the primary comparison.',
     },
     "cobweb_divergent": {
         "scenario_id": "cobweb_divergent_profit_objective",
@@ -5771,8 +5747,7 @@ PROFIT_OBJECTIVE_VARIANT_SPECS = {
             "price_risk_buffer": 0.08,
         },
         "notes": (
-            "The web model spreads pressure C3 formal configuration; price signals are market evidence."
-            "Agent makes rolling business decisions based on profit, cash, service and production adjustment risks."
+            'Formal C3 divergent-cobweb configuration: use price as market evidence and make rolling decisions over profit, cash, service and production-adjustment risk.'
         ),
     },
 }
@@ -6106,6 +6081,15 @@ def _ensure_single_enterprise_scenario_loaded(scenario_id: str) -> None:
     """Load single-case source assets only when that scenario is requested."""
     if scenario_id in SCENARIO_CONFIGS:
         return
+    from config.firm_architecture_experiment import SCENARIOS as FIRM_SCENARIOS, build_scenario
+    if scenario_id in FIRM_SCENARIOS:
+        with _SINGLE_ENTERPRISE_SCENARIO_LOAD_LOCK:
+            source = FIRM_SCENARIOS[scenario_id]["source"]
+            _ensure_single_enterprise_scenario_loaded(source)
+            SCENARIO_CONFIGS[scenario_id] = _finalize_scenario_config(
+                scenario_id, build_scenario(scenario_id, SCENARIO_CONFIGS[source]),
+            )
+        return
     requested_scripted = scenario_id.endswith("_scripted")
     base_id = _single_enterprise_base_case_id(scenario_id)
     if not base_id:
@@ -6168,14 +6152,14 @@ def _deep_merge_config(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[s
             merged[key] = deepcopy(value)
     return merged
 
-# Default environment simulation horizon when the agent runner does not override it.
+
 DEFAULT_SERVICE_TOTAL_STEPS = ACTIVE_SCENARIO_CONFIG["simulation"]["service_total_steps"]
-# Default number of rounds advanced by the agent runner's `main()` entry point.
+
 DEFAULT_AGENT_RUN_STEPS = ACTIVE_SCENARIO_CONFIG["simulation"]["agent_run_steps"]
-# Reserved simulation step duration; retained in exported configuration for compatibility.
+
 DEFAULT_STEP_DURATION = ACTIVE_SCENARIO_CONFIG["simulation"]["step_duration"]
 
-# Basic external consumer demand allocation. The number of external orders received daily by the terminal enterprise is generated by this sequence.
+
 DEFAULT_MARKET_DEMAND_MODE = normalize_market_demand_mode(
     ACTIVE_SCENARIO_CONFIG["simulation"]["market_demand_mode"]
 )
@@ -6193,14 +6177,14 @@ DEFAULT_HERDING_CONFIG = deepcopy(
     ACTIVE_SCENARIO_CONFIG["simulation"].get("herding_config", DEFAULT_HERDING_CONFIG_TEMPLATE)
 )
 
-# The main workflow uses a custom network whose enterprise `tier` values define supply-chain levels.
+
 DEFAULT_NETWORK_CONFIG = ACTIVE_SCENARIO_CONFIG["simulation"]["network_config"]
-# Maximum enterprise-level concurrency, enforced by `MultiEnterpriseAgentManager.enterprise_semaphore`.
+
 DEFAULT_MAX_ENTERPRISE_CONCURRENCY = ACTIVE_SCENARIO_CONFIG["simulation"]["max_enterprise_concurrency"]
-# Maximum department-level concurrency within one enterprise, enforced by `EnterpriseRuntime.department_semaphore`.
+
 DEFAULT_MAX_DEPARTMENT_CONCURRENCY = ACTIVE_SCENARIO_CONFIG["simulation"]["max_department_concurrency"]
 
-# `SimulationEnvAdapter` uses these rules to add external market orders and recurring payroll actions during the Daily phase.
+
 EXTERNAL_MARKET_ORDER_ENTERPRISE_ID = ACTIVE_SCENARIO_CONFIG["runtime_injection"]["external_market_order_enterprise_id"]
 EXTERNAL_MARKET_ORDER_ENTERPRISE_IDS = ACTIVE_SCENARIO_CONFIG["runtime_injection"].get(
     "external_market_order_enterprise_ids",
@@ -6249,34 +6233,37 @@ BULLWHIP_PROPOSAL_CONVERSION_ACCELERATION = ACTIVE_SCENARIO_CONFIG["runtime_inje
 BULLWHIP_MANUFACTURER_UPSTREAM_AMPLIFICATION = ACTIVE_SCENARIO_CONFIG["runtime_injection"]["bullwhip_manufacturer_upstream_amplification"]
 BULLWHIP_SUPPLIER_UPSTREAM_PULL_THROUGH_MODE = ACTIVE_SCENARIO_CONFIG["runtime_injection"]["bullwhip_supplier_upstream_pull_through_mode"]
 
-# Automatic HR and inventory policies affect agent-side decisions without changing module-level rules.
+
 AUTO_HR_POLICY = ACTIVE_SCENARIO_CONFIG["auto_policy"]["hr"]
 AUTO_INVENTORY_POLICY = ACTIVE_SCENARIO_CONFIG["auto_policy"]["inventory"]
 
-# Enterprise and environment configuration for the active scenario.
-# Scope of use:
+
+
 # - `simulate/simulation_server.py`
 # - `core/controller.py`
-# - Enterprise observation and action-generation workflow
+
 ACTIVE_ENTERPRISE_SPECS = ACTIVE_SCENARIO_CONFIG["enterprise_specs"]
 ACTIVE_ENTERPRISE_CONFIGS = ACTIVE_SCENARIO_CONFIG["enterprise_configs"]
 
-# Fixed multi-enterprise Agent organization.
+
 AGENT_ENTERPRISE_LAYOUT = ACTIVE_SCENARIO_CONFIG["agent_enterprise_layout"]
 
-# Initialization actions are persisted to `static_commands/` before startup.
-# Alongside staffing, warehouse capacity, inventory, recipes, and suppliers, the configuration includes:
-# - `set_inventory_policy`: activates scenario-defined safety-stock and reorder-point settings.
-# - Supplier parameters controlled directly by the scenario package.
+
+
+
+
 INITIAL_ACTION_BATCHES = ACTIVE_SCENARIO_CONFIG["initial_action_batches"]
 
-# These actions run at the beginning of each business day to process recruitment, arrivals, deliveries, production completion, and related checks.
+
 DAILY_ACTIONS = ACTIVE_SCENARIO_CONFIG["daily_actions"]
 
 
 def get_available_scenarios() -> List[Dict[str, Any]]:
-    """Return display metadata for every registered scenario."""
+    'Return display metadata for every registered scenario.'
     _ensure_all_single_enterprise_scenarios_loaded()
+    from config.firm_architecture_experiment import SCENARIOS as FIRM_SCENARIOS
+    for scenario_id in FIRM_SCENARIOS:
+        _ensure_single_enterprise_scenario_loaded(scenario_id)
     return [
         {
             "scenario_id": scenario_id,

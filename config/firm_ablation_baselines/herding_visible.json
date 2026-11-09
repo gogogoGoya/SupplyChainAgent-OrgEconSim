@@ -1,0 +1,1708 @@
+{
+  "meta": {
+    "scenario_id": "herding_peer_visible_profit_objective",
+    "name": "Herding / C3 peer-visible reference",
+    "summary": "Frozen C3 operating configuration. Agents decide from visible local/market evidence using profit, cash safety, service and inventory/resource-risk objectives; no economic-effect direction is prescribed."
+  },
+  "simulation": {
+    "service_total_steps": 40,
+    "agent_run_steps": 40,
+    "step_duration": 0.1,
+    "market_demand_mode": "herding_market",
+    "beer_game_demand_series": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "beer_game_customer_delivery_lead_time": 1,
+    "beer_game_unit_price": 0,
+    "herding_config": {
+      "enabled": true,
+      "product_id": "smart_sensor",
+      "target_enterprise_ids": [
+        "Sensor_A",
+        "Sensor_B",
+        "Sensor_C",
+        "Sensor_D"
+      ],
+      "true_demand_series": [
+        80,
+        90,
+        110,
+        130,
+        150,
+        140,
+        120,
+        95,
+        80,
+        70,
+        65,
+        60,
+        60,
+        60,
+        60,
+        60,
+        60,
+        60,
+        60,
+        60,
+        60,
+        60,
+        60,
+        60,
+        60,
+        60,
+        60,
+        60,
+        60,
+        60,
+        60,
+        60,
+        60,
+        60,
+        60,
+        60,
+        60,
+        60,
+        60,
+        60
+      ],
+      "market_heat_series": [
+        0.35,
+        0.45,
+        0.65,
+        0.85,
+        0.95,
+        0.92,
+        0.82,
+        0.7,
+        0.55,
+        0.42,
+        0.35,
+        0.3,
+        0.3,
+        0.3,
+        0.3,
+        0.3,
+        0.3,
+        0.3,
+        0.3,
+        0.3,
+        0.3,
+        0.3,
+        0.3,
+        0.3,
+        0.3,
+        0.3,
+        0.3,
+        0.3,
+        0.3,
+        0.3,
+        0.3,
+        0.3,
+        0.3,
+        0.3,
+        0.3,
+        0.3,
+        0.3,
+        0.3,
+        0.3,
+        0.3
+      ],
+      "base_unit_price": 420.0,
+      "unit_cost_reference": 210.0,
+      "customer_delivery_lead_time": 1,
+      "production_lag_rounds": 1,
+      "initial_reference_plan_quantity": 70.0,
+      "peer_visibility_enabled": true,
+      "peer_visibility_lag_rounds": 1,
+      "market_heat_noise_level": 0.0,
+      "herding_pressure_weight": 0.65,
+      "overproduction_threshold_ratio": 1.15,
+      "target_synchronization_threshold": 0.72
+    },
+    "network_config": {
+      "structure": "custom"
+    },
+    "max_enterprise_concurrency": 4,
+    "max_department_concurrency": 2,
+    "beer_game_product_id": "smart_device"
+  },
+  "runtime_injection": {
+    "external_market_order_enterprise_id": "Sensor_A",
+    "external_market_order_enterprise_ids": [
+      "Sensor_A",
+      "Sensor_B",
+      "Sensor_C",
+      "Sensor_D"
+    ],
+    "salary_payment_interval_days": 12,
+    "salary_payment_enterprise_ids": [
+      "Sensor_A",
+      "Sensor_B",
+      "Sensor_C",
+      "Sensor_D"
+    ],
+    "inventory_cost_daily_settlement_enabled": false,
+    "inventory_cost_enterprise_ids": [],
+    "inventory_cost_exemption_policy": {
+      "enabled": false,
+      "target_enterprise_ids": [],
+      "target_role_tags": []
+    },
+    "analyst_policy": {
+      "full_analysis_interval_rounds": 2,
+      "force_on_round_zero": true,
+      "fallback_to_latest_archive": true
+    },
+    "herding_experiment_policy": {
+      "enabled": true,
+      "target_enterprise_ids": [
+        "Sensor_A",
+        "Sensor_B",
+        "Sensor_C",
+        "Sensor_D"
+      ],
+      "target_role_tags": [],
+      "signal_usage": "market_expectation_reference_not_command",
+      "allow_raw_peer_files": false,
+      "peer_summary_scope": "environment_aggregated_only"
+    },
+    "top_tier_supply_policy": {
+      "enabled": false,
+      "enterprise_ids": [],
+      "target_role_tags": [],
+      "credit_enabled_supplier_types": [
+        "external"
+      ],
+      "external_credit_limit": 0.0,
+      "payable_delay_rounds": 0,
+      "max_single_order_share": 1.0,
+      "external_logistics_cost_multiplier": 0.1,
+      "allow_direct_external_replenishment_without_exchange": false
+    },
+    "safety_stop_policy": {
+      "enabled": false,
+      "target_enterprise_ids": [],
+      "min_round_to_evaluate": 0,
+      "consecutive_no_order_rounds": 99,
+      "consecutive_decline_rounds": 99,
+      "economic_metric": "net_profit",
+      "require_negative_metric": true,
+      "metric_floor": 0.0
+    },
+    "staffing_relaxation_policy": {
+      "enabled": false,
+      "enterprise_ids": [],
+      "target_role_tags": [],
+      "virtual_available_workers": 0,
+      "allow_soft_assignment": true,
+      "allow_soft_release": true
+    },
+    "bullwhip_midstream_pass_through_mode": {
+      "enabled": false,
+      "target_enterprise_ids": [],
+      "target_role_tags": [],
+      "ignore_stale_backlog_block_for_new_supply": true,
+      "soften_confirmed_backlog_penalty": true,
+      "fill_rate_caution_threshold": 0.45,
+      "prefer_service_level_over_margin": true,
+      "minimum_release_ratio_when_inventory_available": 0.35
+    },
+    "bullwhip_proposal_conversion_acceleration": {
+      "enabled": false,
+      "target_enterprise_ids": [],
+      "target_role_tags": [],
+      "prefer_accept_when_due_in_future": true,
+      "pricing_gap_tolerance_multiplier": 1.5,
+      "future_service_commit_threshold": "aggressive",
+      "reduce_rejection_for_inventory_gap_only": true
+    },
+    "bullwhip_manufacturer_upstream_amplification": {
+      "enabled": false,
+      "target_enterprise_ids": [],
+      "target_role_tags": [],
+      "proposal_signal_weight_multiplier": 4.0,
+      "recovery_target_quantity_multiplier": 1.6,
+      "bottleneck_quantity_multiplier": 1.8,
+      "replenishment_soft_cap_multiplier": 1.4
+    },
+    "bullwhip_supplier_upstream_pull_through_mode": {
+      "enabled": false,
+      "target_enterprise_ids": [],
+      "target_role_tags": [],
+      "ignore_inventory_headroom_skip": true,
+      "package_coverage_target_rounds_multiplier": 1.75,
+      "package_quantity_multiplier": 1.35,
+      "bottleneck_priority_boost_multiplier": 1.4,
+      "package_priority_boost_multiplier": 1.6,
+      "backlog_pull_through_multiplier": 1.25
+    },
+    "scripted_rule_policy": {
+      "enabled": false,
+      "mode": "scripted_rules",
+      "analyst": {
+        "enabled": false
+      },
+      "departments": {
+        "apply_to_departments": [
+          "all"
+        ]
+      },
+      "sales": {
+        "accept_first_available_order": true
+      },
+      "procurement": {
+        "default_order_quantity": 50,
+        "logistics_mode": "road"
+      },
+      "production": {
+        "base_quantity": 80,
+        "daily_capacity": 80,
+        "oscillation_amplitude": 0.25,
+        "growth_rate": 0.08,
+        "peer_signal_sensitivity": 0.2,
+        "single_case_quantity": 80,
+        "allow_build_production_line": true,
+        "herding_no_peer_enterprise_multipliers": {
+          "Sensor_A": 0.35,
+          "Sensor_B": 0.75,
+          "Sensor_C": 1.25,
+          "Sensor_D": 1.75
+        }
+      },
+      "trade": {
+        "fallback_sales_response": "accept_implicit",
+        "fallback_procurement_response": "reject_without_candidate",
+        "reject_procurement_proposal_when_unaffordable": true,
+        "procurement_accept_cash_buffer": 0
+      },
+      "single_enterprise_rules": {
+        "accept_orders_per_round": 1,
+        "market_development_interval": 3,
+        "market_development_cost": 50000,
+        "market_development_cash_buffer": 0,
+        "market_development_workers": 1,
+        "market_development_when_no_available_orders": true,
+        "cash_guard_threshold": 60000,
+        "critical_cash_threshold": 20000,
+        "reject_unfulfillable_orders": true,
+        "max_procurement_orders_per_round": 1,
+        "procurement_budget_cash_share": 0.35,
+        "procurement_min_budget": 5000,
+        "material_coverage_target_quantity": 80,
+        "material_order_multiplier": 1.2,
+        "preferred_logistics_mode": "road",
+        "production_round_interval": 1,
+        "production_quantity": 80,
+        "production_daily_capacity": 80,
+        "low_finished_goods_threshold": 40,
+        "target_finished_goods_buffer": 90,
+        "capacity_pressure_threshold": 0.85,
+        "build_line_type": "small",
+        "production_staff_minimum": 2,
+        "hr_recruit_people": 2,
+        "warehouse_pressure_threshold": 0.88,
+        "warehouse_expansion_capacity": 1000
+      }
+    },
+    "profit_objective_policy": {
+      "enabled": true,
+      "objective_profile": "profit_maximization",
+      "target_enterprise_ids": [],
+      "planning_horizon_rounds": 8,
+      "objective_weights": {
+        "net_profit": 0.36,
+        "cash_safety": 0.24,
+        "service_level": 0.18,
+        "inventory_cost_control": 0.16,
+        "risk_buffer": 0.06
+      },
+      "decision_contract": {
+        "primary_goal": "maximize sustainable enterprise value under environment constraints",
+        "mechanism_reproduction_required": false,
+        "may_reduce_classic_effect_strength": true,
+        "must_respect_action_constraints": true,
+        "avoid_unprofitable_volume_chasing": true,
+        "protect_long_run_operating_stability": true
+      },
+      "candidate_ranking_contract": {
+        "enabled": true,
+        "scope": "C3_profit_objective_only",
+        "rank_trade_candidates_by": [
+          "expected_margin_or_cost_saving",
+          "cash_safety_after_action",
+          "service_level_impact",
+          "inventory_or_resource_risk",
+          "execution_feasibility"
+        ],
+        "reject_or_pass_when": [
+          "proposal_or_order_is_not_actionable",
+          "cash_guard_hard_blocked",
+          "stock_or_material_shortage_blocks_fulfillment",
+          "price_or_margin_is_unfavorable_without_service_pressure",
+          "action_would_chase_volume_without_sustainable_profit"
+        ],
+        "do_not_change_observation_boundary": true,
+        "do_not_enable_blackboard_or_two_phase_by_itself": true
+      }
+    },
+    "long_run_experiment_policy": {
+      "enabled": true,
+      "target_enterprise_ids": [],
+      "recommended_total_steps": 40,
+      "history_days": 8,
+      "warmup_rounds": 3,
+      "exclude_tail_rounds": 2,
+      "decision_contract": {
+        "use_recent_history_projection": true,
+        "protect_cash_runway_and_service_level": true,
+        "avoid_terminal_round_inventory_dumping": true,
+        "do_not_treat_last_round_metrics_as_primary_evaluation": true,
+        "primary_evaluation_window": "post_warmup_pre_tail_rounds"
+      },
+      "execution_guard": {
+        "cap_terminal_replenishment_recovery": true,
+        "normal_replenishment_backlog_recovery_share": 0.6,
+        "normal_replenishment_max_forecast_days": 2,
+        "tail_replenishment_backlog_recovery_share": 0.25,
+        "tail_replenishment_max_forecast_days": 1
+      }
+    },
+    "single_enterprise_chart_export_policy": {
+      "enabled": false,
+      "archive_per_round": true,
+      "inject_to_analyst": true,
+      "target_enterprise_ids": []
+    },
+    "external_market_order_policy": {
+      "enabled": true,
+      "mode": "multi_target",
+      "target_enterprise_ids": [
+        "Sensor_A",
+        "Sensor_B",
+        "Sensor_C",
+        "Sensor_D"
+      ],
+      "generation_timing": "daily_start"
+    }
+  },
+  "auto_policy": {
+    "hr": {
+      "idle_threshold": 0.3,
+      "recruit_trigger_threshold": 0.85,
+      "recruit_ratio": 0.12,
+      "min_recruit": 1,
+      "max_recruit": 3,
+      "severe_utilization_threshold": 0.95,
+      "available_worker_floor": 0,
+      "failure_recruit_boost": 1,
+      "procurement_pending_quantity_trigger": 1,
+      "sales_backlog_trigger": 40,
+      "sales_fill_rate_trigger": 0.9,
+      "production_plan_trigger": 1,
+      "inventory_support_threshold": 0.85,
+      "inventory_alert_count_trigger": 2
+    },
+    "inventory": {
+      "expand_trigger_threshold": 0.9,
+      "expand_ratio": 0.12,
+      "expansion_options": [
+        1000,
+        2000,
+        5000
+      ],
+      "min_expansion_if_nonzero": 300
+    }
+  },
+  "enterprise_specs": [
+    {
+      "agent_departments": [
+        {
+          "dept_id": "hr",
+          "name": "Human Resources",
+          "role": "HR",
+          "skill_name": "hr",
+          "type": "Auto"
+        },
+        {
+          "dept_id": "inventory",
+          "name": "Inventory Management",
+          "role": "Inventory",
+          "skill_name": "inventory",
+          "type": "Auto"
+        },
+        {
+          "dept_id": "production",
+          "name": "Production Management",
+          "role": "Production",
+          "skill_name": "production",
+          "type": "Agent"
+        },
+        {
+          "dept_id": "sales",
+          "name": "Sales Management",
+          "role": "Sales",
+          "skill_name": "sales",
+          "type": "Agent"
+        }
+      ],
+      "enabled_functions": [
+        "sales",
+        "finance",
+        "production",
+        "hr",
+        "inventory"
+      ],
+      "enterprise_id": "Sensor_A",
+      "enterprise_name": "Sensor_A",
+      "initial_capacity": 180000,
+      "initial_capital": 260000,
+      "initial_inventory": [
+        {
+          "item_id": "smart_sensor",
+          "item_type": "product",
+          "purchase_price": 220,
+          "quantity": 35
+        }
+      ],
+      "initial_production_lines": [
+        {
+          "line_type": "small",
+          "ready_at_start": true
+        },
+        {
+          "line_type": "small",
+          "ready_at_start": true
+        }
+      ],
+      "initial_staffing": {
+        "finance": 1,
+        "hr": 1,
+        "inventory": 2,
+        "production": 9,
+        "sales": 4
+      },
+      "initial_suppliers": [],
+      "inventory_policies": [
+        {
+          "item_id": "smart_sensor",
+          "reorder_point": 25,
+          "safety_stock": 20
+        }
+      ],
+      "policy_tags": [
+        "production_enabled",
+        "external_market_connected",
+        "herding_participant"
+      ],
+      "production_recipe": {
+        "equipment_cost_per_unit": 8.0,
+        "labor_cost_per_unit": 12.0,
+        "product_id": "smart_sensor",
+        "production_time": 1,
+        "raw_materials": {}
+      },
+      "purchasable_materials_idList": [],
+      "role_tags": [
+        "herding_participant",
+        "parallel_smart_sensor_producer"
+      ],
+      "salable_products_idList": [
+        "smart_sensor"
+      ],
+      "strategy_profile": {
+        "cash_risk_sensitivity": 0.35,
+        "decision_note": "When there is a strong signal of expansion in the market heat and contract industry, there is a tendency to follow it quickly to gain market share.",
+        "inventory_risk_sensitivity": 0.3,
+        "label": "Trends Follower",
+        "market_heat_sensitivity": 0.92,
+        "peer_signal_sensitivity": 0.88,
+        "profile_id": "trend_chaser"
+      },
+      "supplier_name_list": [],
+      "tier": 0
+    },
+    {
+      "agent_departments": [
+        {
+          "dept_id": "hr",
+          "name": "Human Resources",
+          "role": "HR",
+          "skill_name": "hr",
+          "type": "Auto"
+        },
+        {
+          "dept_id": "inventory",
+          "name": "Inventory Management",
+          "role": "Inventory",
+          "skill_name": "inventory",
+          "type": "Auto"
+        },
+        {
+          "dept_id": "production",
+          "name": "Production Management",
+          "role": "Production",
+          "skill_name": "production",
+          "type": "Agent"
+        },
+        {
+          "dept_id": "sales",
+          "name": "Sales Management",
+          "role": "Sales",
+          "skill_name": "sales",
+          "type": "Agent"
+        }
+      ],
+      "enabled_functions": [
+        "sales",
+        "finance",
+        "production",
+        "hr",
+        "inventory"
+      ],
+      "enterprise_id": "Sensor_B",
+      "enterprise_name": "Sensor_B",
+      "initial_capacity": 180000,
+      "initial_capital": 260000,
+      "initial_inventory": [
+        {
+          "item_id": "smart_sensor",
+          "item_type": "product",
+          "purchase_price": 220,
+          "quantity": 35
+        }
+      ],
+      "initial_production_lines": [
+        {
+          "line_type": "small",
+          "ready_at_start": true
+        },
+        {
+          "line_type": "small",
+          "ready_at_start": true
+        }
+      ],
+      "initial_staffing": {
+        "finance": 1,
+        "hr": 1,
+        "inventory": 2,
+        "production": 9,
+        "sales": 4
+      },
+      "initial_suppliers": [],
+      "inventory_policies": [
+        {
+          "item_id": "smart_sensor",
+          "reorder_point": 25,
+          "safety_stock": 20
+        }
+      ],
+      "policy_tags": [
+        "production_enabled",
+        "external_market_connected",
+        "herding_participant"
+      ],
+      "production_recipe": {
+        "equipment_cost_per_unit": 8.0,
+        "labor_cost_per_unit": 12.0,
+        "product_id": "smart_sensor",
+        "production_time": 1,
+        "raw_materials": {}
+      },
+      "purchasable_materials_idList": [],
+      "role_tags": [
+        "herding_participant",
+        "parallel_smart_sensor_producer"
+      ],
+      "salable_products_idList": [
+        "smart_sensor"
+      ],
+      "strategy_profile": {
+        "cash_risk_sensitivity": 0.5,
+        "decision_note": "A summary of the heat and trade of the market will be consulted, but the increase will need to be controlled in combination with real orders, stock and cash pressure.",
+        "inventory_risk_sensitivity": 0.5,
+        "label": "Balance Follower",
+        "market_heat_sensitivity": 0.7,
+        "peer_signal_sensitivity": 0.62,
+        "profile_id": "balanced_follower"
+      },
+      "supplier_name_list": [],
+      "tier": 0
+    },
+    {
+      "agent_departments": [
+        {
+          "dept_id": "hr",
+          "name": "Human Resources",
+          "role": "HR",
+          "skill_name": "hr",
+          "type": "Auto"
+        },
+        {
+          "dept_id": "inventory",
+          "name": "Inventory Management",
+          "role": "Inventory",
+          "skill_name": "inventory",
+          "type": "Auto"
+        },
+        {
+          "dept_id": "production",
+          "name": "Production Management",
+          "role": "Production",
+          "skill_name": "production",
+          "type": "Agent"
+        },
+        {
+          "dept_id": "sales",
+          "name": "Sales Management",
+          "role": "Sales",
+          "skill_name": "sales",
+          "type": "Agent"
+        }
+      ],
+      "enabled_functions": [
+        "sales",
+        "finance",
+        "production",
+        "hr",
+        "inventory"
+      ],
+      "enterprise_id": "Sensor_C",
+      "enterprise_name": "Sensor_C",
+      "initial_capacity": 180000,
+      "initial_capital": 260000,
+      "initial_inventory": [
+        {
+          "item_id": "smart_sensor",
+          "item_type": "product",
+          "purchase_price": 220,
+          "quantity": 35
+        }
+      ],
+      "initial_production_lines": [
+        {
+          "line_type": "small",
+          "ready_at_start": true
+        },
+        {
+          "line_type": "small",
+          "ready_at_start": true
+        }
+      ],
+      "initial_staffing": {
+        "finance": 1,
+        "hr": 1,
+        "inventory": 2,
+        "production": 9,
+        "sales": 4
+      },
+      "initial_suppliers": [],
+      "inventory_policies": [
+        {
+          "item_id": "smart_sensor",
+          "reorder_point": 25,
+          "safety_stock": 20
+        }
+      ],
+      "policy_tags": [
+        "production_enabled",
+        "external_market_connected",
+        "herding_participant"
+      ],
+      "production_recipe": {
+        "equipment_cost_per_unit": 8.0,
+        "labor_cost_per_unit": 12.0,
+        "product_id": "smart_sensor",
+        "production_time": 1,
+        "raw_materials": {}
+      },
+      "purchasable_materials_idList": [],
+      "role_tags": [
+        "herding_participant",
+        "parallel_smart_sensor_producer"
+      ],
+      "salable_products_idList": [
+        "smart_sensor"
+      ],
+      "strategy_profile": {
+        "cash_risk_sensitivity": 0.35,
+        "decision_note": "When there is a strong signal of expansion in the market heat and contract industry, there is a tendency to follow it quickly to gain market share.",
+        "inventory_risk_sensitivity": 0.3,
+        "label": "Trends Follower",
+        "market_heat_sensitivity": 0.92,
+        "peer_signal_sensitivity": 0.88,
+        "profile_id": "trend_chaser"
+      },
+      "supplier_name_list": [],
+      "tier": 0
+    },
+    {
+      "agent_departments": [
+        {
+          "dept_id": "hr",
+          "name": "Human Resources",
+          "role": "HR",
+          "skill_name": "hr",
+          "type": "Auto"
+        },
+        {
+          "dept_id": "inventory",
+          "name": "Inventory Management",
+          "role": "Inventory",
+          "skill_name": "inventory",
+          "type": "Auto"
+        },
+        {
+          "dept_id": "production",
+          "name": "Production Management",
+          "role": "Production",
+          "skill_name": "production",
+          "type": "Agent"
+        },
+        {
+          "dept_id": "sales",
+          "name": "Sales Management",
+          "role": "Sales",
+          "skill_name": "sales",
+          "type": "Agent"
+        }
+      ],
+      "enabled_functions": [
+        "sales",
+        "finance",
+        "production",
+        "hr",
+        "inventory"
+      ],
+      "enterprise_id": "Sensor_D",
+      "enterprise_name": "Sensor_D",
+      "initial_capacity": 180000,
+      "initial_capital": 260000,
+      "initial_inventory": [
+        {
+          "item_id": "smart_sensor",
+          "item_type": "product",
+          "purchase_price": 220,
+          "quantity": 35
+        }
+      ],
+      "initial_production_lines": [
+        {
+          "line_type": "small",
+          "ready_at_start": true
+        },
+        {
+          "line_type": "small",
+          "ready_at_start": true
+        }
+      ],
+      "initial_staffing": {
+        "finance": 1,
+        "hr": 1,
+        "inventory": 2,
+        "production": 9,
+        "sales": 4
+      },
+      "initial_suppliers": [],
+      "inventory_policies": [
+        {
+          "item_id": "smart_sensor",
+          "reorder_point": 25,
+          "safety_stock": 20
+        }
+      ],
+      "policy_tags": [
+        "production_enabled",
+        "external_market_connected",
+        "herding_participant"
+      ],
+      "production_recipe": {
+        "equipment_cost_per_unit": 8.0,
+        "labor_cost_per_unit": 12.0,
+        "product_id": "smart_sensor",
+        "production_time": 1,
+        "raw_materials": {}
+      },
+      "purchasable_materials_idList": [],
+      "role_tags": [
+        "herding_participant",
+        "parallel_smart_sensor_producer"
+      ],
+      "salable_products_idList": [
+        "smart_sensor"
+      ],
+      "strategy_profile": {
+        "cash_risk_sensitivity": 0.7,
+        "decision_note": "Increased emphasis is placed on backlogs, cash pressures and real orders, and careful validation of market heat and industry signals is maintained.",
+        "inventory_risk_sensitivity": 0.75,
+        "label": "Precautionary Authentication Type",
+        "market_heat_sensitivity": 0.48,
+        "peer_signal_sensitivity": 0.38,
+        "profile_id": "cautious_validator"
+      },
+      "supplier_name_list": [],
+      "tier": 0
+    }
+  ],
+  "enterprise_configs": [
+    {
+      "enabled_functions": [
+        "sales",
+        "finance",
+        "production",
+        "hr",
+        "inventory"
+      ],
+      "id": "Sensor_A",
+      "initial_capital": 260000,
+      "name": "Sensor_A",
+      "policy_tags": [
+        "production_enabled",
+        "external_market_connected",
+        "herding_participant"
+      ],
+      "purchasable_materials_idList": [],
+      "role_tags": [
+        "herding_participant",
+        "parallel_smart_sensor_producer"
+      ],
+      "salable_products_idList": [
+        "smart_sensor"
+      ],
+      "strategy_profile": {
+        "cash_risk_sensitivity": 0.35,
+        "decision_note": "When there is a strong signal of expansion in the market heat and contract industry, there is a tendency to follow it quickly to gain market share.",
+        "inventory_risk_sensitivity": 0.3,
+        "label": "Trends Follower",
+        "market_heat_sensitivity": 0.92,
+        "peer_signal_sensitivity": 0.88,
+        "profile_id": "trend_chaser"
+      },
+      "supplier_name_list": [],
+      "tier": 0
+    },
+    {
+      "enabled_functions": [
+        "sales",
+        "finance",
+        "production",
+        "hr",
+        "inventory"
+      ],
+      "id": "Sensor_B",
+      "initial_capital": 260000,
+      "name": "Sensor_B",
+      "policy_tags": [
+        "production_enabled",
+        "external_market_connected",
+        "herding_participant"
+      ],
+      "purchasable_materials_idList": [],
+      "role_tags": [
+        "herding_participant",
+        "parallel_smart_sensor_producer"
+      ],
+      "salable_products_idList": [
+        "smart_sensor"
+      ],
+      "strategy_profile": {
+        "cash_risk_sensitivity": 0.5,
+        "decision_note": "A summary of the heat and trade of the market will be consulted, but the increase will need to be controlled in combination with real orders, stock and cash pressure.",
+        "inventory_risk_sensitivity": 0.5,
+        "label": "Balance Follower",
+        "market_heat_sensitivity": 0.7,
+        "peer_signal_sensitivity": 0.62,
+        "profile_id": "balanced_follower"
+      },
+      "supplier_name_list": [],
+      "tier": 0
+    },
+    {
+      "enabled_functions": [
+        "sales",
+        "finance",
+        "production",
+        "hr",
+        "inventory"
+      ],
+      "id": "Sensor_C",
+      "initial_capital": 260000,
+      "name": "Sensor_C",
+      "policy_tags": [
+        "production_enabled",
+        "external_market_connected",
+        "herding_participant"
+      ],
+      "purchasable_materials_idList": [],
+      "role_tags": [
+        "herding_participant",
+        "parallel_smart_sensor_producer"
+      ],
+      "salable_products_idList": [
+        "smart_sensor"
+      ],
+      "strategy_profile": {
+        "cash_risk_sensitivity": 0.35,
+        "decision_note": "When there is a strong signal of expansion in the market heat and contract industry, there is a tendency to follow it quickly to gain market share.",
+        "inventory_risk_sensitivity": 0.3,
+        "label": "Trends Follower",
+        "market_heat_sensitivity": 0.92,
+        "peer_signal_sensitivity": 0.88,
+        "profile_id": "trend_chaser"
+      },
+      "supplier_name_list": [],
+      "tier": 0
+    },
+    {
+      "enabled_functions": [
+        "sales",
+        "finance",
+        "production",
+        "hr",
+        "inventory"
+      ],
+      "id": "Sensor_D",
+      "initial_capital": 260000,
+      "name": "Sensor_D",
+      "policy_tags": [
+        "production_enabled",
+        "external_market_connected",
+        "herding_participant"
+      ],
+      "purchasable_materials_idList": [],
+      "role_tags": [
+        "herding_participant",
+        "parallel_smart_sensor_producer"
+      ],
+      "salable_products_idList": [
+        "smart_sensor"
+      ],
+      "strategy_profile": {
+        "cash_risk_sensitivity": 0.7,
+        "decision_note": "Increased emphasis is placed on backlogs, cash pressures and real orders, and careful validation of market heat and industry signals is maintained.",
+        "inventory_risk_sensitivity": 0.75,
+        "label": "Precautionary Authentication Type",
+        "market_heat_sensitivity": 0.48,
+        "peer_signal_sensitivity": 0.38,
+        "profile_id": "cautious_validator"
+      },
+      "supplier_name_list": [],
+      "tier": 0
+    }
+  ],
+  "agent_enterprise_layout": [
+    {
+      "departments": [
+        {
+          "dept_id": "hr",
+          "name": "Human Resources",
+          "role": "HR",
+          "skill_name": "hr",
+          "type": "Auto"
+        },
+        {
+          "dept_id": "inventory",
+          "name": "Inventory Management",
+          "role": "Inventory",
+          "skill_name": "inventory",
+          "type": "Auto"
+        },
+        {
+          "dept_id": "production",
+          "name": "Production Management",
+          "role": "Production",
+          "skill_name": "production",
+          "type": "Agent"
+        },
+        {
+          "dept_id": "sales",
+          "name": "Sales Management",
+          "role": "Sales",
+          "skill_name": "sales",
+          "type": "Agent"
+        }
+      ],
+      "enterprise_id": "Sensor_A",
+      "enterprise_name": "Sensor_A"
+    },
+    {
+      "departments": [
+        {
+          "dept_id": "hr",
+          "name": "Human Resources",
+          "role": "HR",
+          "skill_name": "hr",
+          "type": "Auto"
+        },
+        {
+          "dept_id": "inventory",
+          "name": "Inventory Management",
+          "role": "Inventory",
+          "skill_name": "inventory",
+          "type": "Auto"
+        },
+        {
+          "dept_id": "production",
+          "name": "Production Management",
+          "role": "Production",
+          "skill_name": "production",
+          "type": "Agent"
+        },
+        {
+          "dept_id": "sales",
+          "name": "Sales Management",
+          "role": "Sales",
+          "skill_name": "sales",
+          "type": "Agent"
+        }
+      ],
+      "enterprise_id": "Sensor_B",
+      "enterprise_name": "Sensor_B"
+    },
+    {
+      "departments": [
+        {
+          "dept_id": "hr",
+          "name": "Human Resources",
+          "role": "HR",
+          "skill_name": "hr",
+          "type": "Auto"
+        },
+        {
+          "dept_id": "inventory",
+          "name": "Inventory Management",
+          "role": "Inventory",
+          "skill_name": "inventory",
+          "type": "Auto"
+        },
+        {
+          "dept_id": "production",
+          "name": "Production Management",
+          "role": "Production",
+          "skill_name": "production",
+          "type": "Agent"
+        },
+        {
+          "dept_id": "sales",
+          "name": "Sales Management",
+          "role": "Sales",
+          "skill_name": "sales",
+          "type": "Agent"
+        }
+      ],
+      "enterprise_id": "Sensor_C",
+      "enterprise_name": "Sensor_C"
+    },
+    {
+      "departments": [
+        {
+          "dept_id": "hr",
+          "name": "Human Resources",
+          "role": "HR",
+          "skill_name": "hr",
+          "type": "Auto"
+        },
+        {
+          "dept_id": "inventory",
+          "name": "Inventory Management",
+          "role": "Inventory",
+          "skill_name": "inventory",
+          "type": "Auto"
+        },
+        {
+          "dept_id": "production",
+          "name": "Production Management",
+          "role": "Production",
+          "skill_name": "production",
+          "type": "Agent"
+        },
+        {
+          "dept_id": "sales",
+          "name": "Sales Management",
+          "role": "Sales",
+          "skill_name": "sales",
+          "type": "Agent"
+        }
+      ],
+      "enterprise_id": "Sensor_D",
+      "enterprise_name": "Sensor_D"
+    }
+  ],
+  "initial_action_batches": {
+    "init_action_1": [
+      {
+        "action": {
+          "action_name": "initialize_staffing",
+          "action_param": {
+            "initial_staffing": {
+              "finance": 1,
+              "hr": 1,
+              "inventory": 2,
+              "production": 9,
+              "sales": 4
+            }
+          }
+        },
+        "executor_id": "Sensor_A",
+        "module_type": "HRManager"
+      },
+      {
+        "action": {
+          "action_name": "set_capacity",
+          "action_param": {
+            "capacity": 180000
+          }
+        },
+        "executor_id": "Sensor_A",
+        "module_type": "InventoryManager"
+      },
+      {
+        "action": {
+          "action_name": "initialize_staffing",
+          "action_param": {
+            "initial_staffing": {
+              "finance": 1,
+              "hr": 1,
+              "inventory": 2,
+              "production": 9,
+              "sales": 4
+            }
+          }
+        },
+        "executor_id": "Sensor_B",
+        "module_type": "HRManager"
+      },
+      {
+        "action": {
+          "action_name": "set_capacity",
+          "action_param": {
+            "capacity": 180000
+          }
+        },
+        "executor_id": "Sensor_B",
+        "module_type": "InventoryManager"
+      },
+      {
+        "action": {
+          "action_name": "initialize_staffing",
+          "action_param": {
+            "initial_staffing": {
+              "finance": 1,
+              "hr": 1,
+              "inventory": 2,
+              "production": 9,
+              "sales": 4
+            }
+          }
+        },
+        "executor_id": "Sensor_C",
+        "module_type": "HRManager"
+      },
+      {
+        "action": {
+          "action_name": "set_capacity",
+          "action_param": {
+            "capacity": 180000
+          }
+        },
+        "executor_id": "Sensor_C",
+        "module_type": "InventoryManager"
+      },
+      {
+        "action": {
+          "action_name": "initialize_staffing",
+          "action_param": {
+            "initial_staffing": {
+              "finance": 1,
+              "hr": 1,
+              "inventory": 2,
+              "production": 9,
+              "sales": 4
+            }
+          }
+        },
+        "executor_id": "Sensor_D",
+        "module_type": "HRManager"
+      },
+      {
+        "action": {
+          "action_name": "set_capacity",
+          "action_param": {
+            "capacity": 180000
+          }
+        },
+        "executor_id": "Sensor_D",
+        "module_type": "InventoryManager"
+      }
+    ],
+    "init_action_2": [
+      {
+        "action": {
+          "action_name": "add_inventory",
+          "action_param": {
+            "item_id": "smart_sensor",
+            "item_type": "product",
+            "purchase_price": 220,
+            "quantity": 35
+          }
+        },
+        "executor_id": "Sensor_A",
+        "module_type": "InventoryManager"
+      },
+      {
+        "action": {
+          "action_name": "add_inventory",
+          "action_param": {
+            "item_id": "smart_sensor",
+            "item_type": "product",
+            "purchase_price": 220,
+            "quantity": 35
+          }
+        },
+        "executor_id": "Sensor_B",
+        "module_type": "InventoryManager"
+      },
+      {
+        "action": {
+          "action_name": "add_inventory",
+          "action_param": {
+            "item_id": "smart_sensor",
+            "item_type": "product",
+            "purchase_price": 220,
+            "quantity": 35
+          }
+        },
+        "executor_id": "Sensor_C",
+        "module_type": "InventoryManager"
+      },
+      {
+        "action": {
+          "action_name": "add_inventory",
+          "action_param": {
+            "item_id": "smart_sensor",
+            "item_type": "product",
+            "purchase_price": 220,
+            "quantity": 35
+          }
+        },
+        "executor_id": "Sensor_D",
+        "module_type": "InventoryManager"
+      }
+    ],
+    "init_action_3": [
+      {
+        "action": {
+          "action_name": "set_inventory_policy",
+          "action_param": {
+            "item_id": "smart_sensor",
+            "reorder_point": 25,
+            "safety_stock": 20
+          }
+        },
+        "executor_id": "Sensor_A",
+        "module_type": "InventoryManager"
+      },
+      {
+        "action": {
+          "action_name": "set_product_recipe",
+          "action_param": {
+            "equipment_cost_per_unit": 8.0,
+            "labor_cost_per_unit": 12.0,
+            "product_id": "smart_sensor",
+            "production_time": 1,
+            "raw_materials": {}
+          }
+        },
+        "executor_id": "Sensor_A",
+        "module_type": "ProductionManager"
+      },
+      {
+        "action": {
+          "action_name": "initialize_production_line",
+          "action_param": {
+            "line_type": "small"
+          }
+        },
+        "executor_id": "Sensor_A",
+        "module_type": "ProductionManager"
+      },
+      {
+        "action": {
+          "action_name": "initialize_production_line",
+          "action_param": {
+            "line_type": "small"
+          }
+        },
+        "executor_id": "Sensor_A",
+        "module_type": "ProductionManager"
+      },
+      {
+        "action": {
+          "action_name": "set_inventory_policy",
+          "action_param": {
+            "item_id": "smart_sensor",
+            "reorder_point": 25,
+            "safety_stock": 20
+          }
+        },
+        "executor_id": "Sensor_B",
+        "module_type": "InventoryManager"
+      },
+      {
+        "action": {
+          "action_name": "set_product_recipe",
+          "action_param": {
+            "equipment_cost_per_unit": 8.0,
+            "labor_cost_per_unit": 12.0,
+            "product_id": "smart_sensor",
+            "production_time": 1,
+            "raw_materials": {}
+          }
+        },
+        "executor_id": "Sensor_B",
+        "module_type": "ProductionManager"
+      },
+      {
+        "action": {
+          "action_name": "initialize_production_line",
+          "action_param": {
+            "line_type": "small"
+          }
+        },
+        "executor_id": "Sensor_B",
+        "module_type": "ProductionManager"
+      },
+      {
+        "action": {
+          "action_name": "initialize_production_line",
+          "action_param": {
+            "line_type": "small"
+          }
+        },
+        "executor_id": "Sensor_B",
+        "module_type": "ProductionManager"
+      },
+      {
+        "action": {
+          "action_name": "set_inventory_policy",
+          "action_param": {
+            "item_id": "smart_sensor",
+            "reorder_point": 25,
+            "safety_stock": 20
+          }
+        },
+        "executor_id": "Sensor_C",
+        "module_type": "InventoryManager"
+      },
+      {
+        "action": {
+          "action_name": "set_product_recipe",
+          "action_param": {
+            "equipment_cost_per_unit": 8.0,
+            "labor_cost_per_unit": 12.0,
+            "product_id": "smart_sensor",
+            "production_time": 1,
+            "raw_materials": {}
+          }
+        },
+        "executor_id": "Sensor_C",
+        "module_type": "ProductionManager"
+      },
+      {
+        "action": {
+          "action_name": "initialize_production_line",
+          "action_param": {
+            "line_type": "small"
+          }
+        },
+        "executor_id": "Sensor_C",
+        "module_type": "ProductionManager"
+      },
+      {
+        "action": {
+          "action_name": "initialize_production_line",
+          "action_param": {
+            "line_type": "small"
+          }
+        },
+        "executor_id": "Sensor_C",
+        "module_type": "ProductionManager"
+      },
+      {
+        "action": {
+          "action_name": "set_inventory_policy",
+          "action_param": {
+            "item_id": "smart_sensor",
+            "reorder_point": 25,
+            "safety_stock": 20
+          }
+        },
+        "executor_id": "Sensor_D",
+        "module_type": "InventoryManager"
+      },
+      {
+        "action": {
+          "action_name": "set_product_recipe",
+          "action_param": {
+            "equipment_cost_per_unit": 8.0,
+            "labor_cost_per_unit": 12.0,
+            "product_id": "smart_sensor",
+            "production_time": 1,
+            "raw_materials": {}
+          }
+        },
+        "executor_id": "Sensor_D",
+        "module_type": "ProductionManager"
+      },
+      {
+        "action": {
+          "action_name": "initialize_production_line",
+          "action_param": {
+            "line_type": "small"
+          }
+        },
+        "executor_id": "Sensor_D",
+        "module_type": "ProductionManager"
+      },
+      {
+        "action": {
+          "action_name": "initialize_production_line",
+          "action_param": {
+            "line_type": "small"
+          }
+        },
+        "executor_id": "Sensor_D",
+        "module_type": "ProductionManager"
+      }
+    ]
+  },
+  "daily_actions": [
+    {
+      "action": {
+        "action_name": "process_recruitment_completion",
+        "action_param": {}
+      },
+      "executor_id": "Sensor_A",
+      "module_type": "HRManager"
+    },
+    {
+      "action": {
+        "action_name": "check_construction_completion",
+        "action_param": {}
+      },
+      "executor_id": "Sensor_A",
+      "module_type": "ProductionManager"
+    },
+    {
+      "action": {
+        "action_name": "check_completed_plans",
+        "action_param": {}
+      },
+      "executor_id": "Sensor_A",
+      "module_type": "ProductionManager"
+    },
+    {
+      "action": {
+        "action_name": "check_market_development_completion",
+        "action_param": {}
+      },
+      "executor_id": "Sensor_A",
+      "module_type": "SalesManager"
+    },
+    {
+      "action": {
+        "action_name": "check_deliverable_orders",
+        "action_param": {}
+      },
+      "executor_id": "Sensor_A",
+      "module_type": "SalesManager"
+    },
+    {
+      "action": {
+        "action_name": "process_recruitment_completion",
+        "action_param": {}
+      },
+      "executor_id": "Sensor_B",
+      "module_type": "HRManager"
+    },
+    {
+      "action": {
+        "action_name": "check_construction_completion",
+        "action_param": {}
+      },
+      "executor_id": "Sensor_B",
+      "module_type": "ProductionManager"
+    },
+    {
+      "action": {
+        "action_name": "check_completed_plans",
+        "action_param": {}
+      },
+      "executor_id": "Sensor_B",
+      "module_type": "ProductionManager"
+    },
+    {
+      "action": {
+        "action_name": "check_market_development_completion",
+        "action_param": {}
+      },
+      "executor_id": "Sensor_B",
+      "module_type": "SalesManager"
+    },
+    {
+      "action": {
+        "action_name": "check_deliverable_orders",
+        "action_param": {}
+      },
+      "executor_id": "Sensor_B",
+      "module_type": "SalesManager"
+    },
+    {
+      "action": {
+        "action_name": "process_recruitment_completion",
+        "action_param": {}
+      },
+      "executor_id": "Sensor_C",
+      "module_type": "HRManager"
+    },
+    {
+      "action": {
+        "action_name": "check_construction_completion",
+        "action_param": {}
+      },
+      "executor_id": "Sensor_C",
+      "module_type": "ProductionManager"
+    },
+    {
+      "action": {
+        "action_name": "check_completed_plans",
+        "action_param": {}
+      },
+      "executor_id": "Sensor_C",
+      "module_type": "ProductionManager"
+    },
+    {
+      "action": {
+        "action_name": "check_market_development_completion",
+        "action_param": {}
+      },
+      "executor_id": "Sensor_C",
+      "module_type": "SalesManager"
+    },
+    {
+      "action": {
+        "action_name": "check_deliverable_orders",
+        "action_param": {}
+      },
+      "executor_id": "Sensor_C",
+      "module_type": "SalesManager"
+    },
+    {
+      "action": {
+        "action_name": "process_recruitment_completion",
+        "action_param": {}
+      },
+      "executor_id": "Sensor_D",
+      "module_type": "HRManager"
+    },
+    {
+      "action": {
+        "action_name": "check_construction_completion",
+        "action_param": {}
+      },
+      "executor_id": "Sensor_D",
+      "module_type": "ProductionManager"
+    },
+    {
+      "action": {
+        "action_name": "check_completed_plans",
+        "action_param": {}
+      },
+      "executor_id": "Sensor_D",
+      "module_type": "ProductionManager"
+    },
+    {
+      "action": {
+        "action_name": "check_market_development_completion",
+        "action_param": {}
+      },
+      "executor_id": "Sensor_D",
+      "module_type": "SalesManager"
+    },
+    {
+      "action": {
+        "action_name": "check_deliverable_orders",
+        "action_param": {}
+      },
+      "executor_id": "Sensor_D",
+      "module_type": "SalesManager"
+    }
+  ],
+  "integration_profiles": {
+    "capabilities": {
+      "analysis": {
+        "profile": "historical_diagnosis",
+        "history_days": 8
+      }
+    }
+  },
+  "experiment_design": {
+    "schema_version": "experiment_design.v1",
+    "decision_regime": "profit_seeking_agent",
+    "agent_objective_profile": "profit_maximization",
+    "constraint_level": "open_objective",
+    "experiment_group": "C3",
+    "evidence_status": "ready_to_run",
+    "notes": "Sheep effect C3; a business summary is still available, but Agent decides whether to follow with profit and stock risk constraints."
+  },
+  "formal_experiment_config": {
+    "schema_version": "formal_experiment_config.v1",
+    "ready_for_formal_run": true,
+    "total_steps": 40,
+    "warmup_rounds": 3,
+    "exclude_tail_rounds": 2,
+    "primary_evaluation_window": {
+      "start_round": 3,
+      "end_round_inclusive": 37
+    },
+    "notes": "Primary experiments use 40 turns by default. Primary metrics exclude the first 3 warm-up turns and the final 2 tail turns, while the complete run remains available for robustness checks."
+  }
+}

@@ -17,10 +17,13 @@ import json
 import os
 import re
 from pathlib import Path
+from config.platform_access import MODE_ENV, TOKEN_ENV, get_platform_access
 
 
 def _load_runtime_env_file() -> None:
     """Load non-empty values from scripts/.env without overriding shell env."""
+    if not get_platform_access().execution_enabled:
+        return
     env_path = Path(__file__).resolve().parents[1] / "scripts" / ".env"
     if not env_path.exists():
         return
@@ -31,11 +34,14 @@ def _load_runtime_env_file() -> None:
         key, value = line.split("=", 1)
         key = key.strip()
         value = value.strip().strip('"').strip("'")
-        if key and value and key not in os.environ:
+        if key not in {MODE_ENV, TOKEN_ENV} and key and value and key not in os.environ:
             os.environ[key] = value
 
 
 def _env_value(name: str) -> str:
+    if name.startswith("ANTHROPIC_") or name == "AGENT_GATEWAY_BASE_URL":
+        if not get_platform_access().execution_enabled:
+            return ""
     return (os.getenv(name) or "").strip()
 
 
@@ -138,6 +144,8 @@ class EnvironmentConfig:
     @classmethod
     def get_agent_env(cls) -> dict:
         """Return non-empty Agent SDK env values from the unified config."""
+        if not get_platform_access().execution_enabled:
+            return {}
         values = {
             "ANTHROPIC_BASE_URL": cls.LOCAL_AGENT_GATEWAY_BASE_URL,
             "ANTHROPIC_MODEL": cls.DEFAULT_AGENT_MODEL,

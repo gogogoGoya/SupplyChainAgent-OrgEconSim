@@ -20,11 +20,13 @@ from config.simulation_preset_config import (
     get_runtime_injection_config,
 )
 from config.module_config import ProcurementConfig
+from config.fd_experiment import policy_from_meta, policy_from_config, fd2_physical_execution_policy
 from runtime.simulation_session_context import get_simulation_session_id
+from core.model_failure import FatalModelError
 from agent.policy_context import build_department_policy_context, build_enterprise_policy_context
 
 # =========================
-# Config Configuration Category
+
 # =========================
 class Config:
     BASE_URL = EnvironmentConfig.SIMULATION_API_BASE_URL
@@ -77,7 +79,7 @@ class Config:
 
 
 # =========================
-# Log system
+
 # =========================
 class TraceIdFilter(logging.Filter):
     def filter(self, record):
@@ -86,9 +88,6 @@ class TraceIdFilter(logging.Filter):
         return True
 
 def setup_logger():
-    Config.LOG_DIR.mkdir(parents=True, exist_ok=True)
-
-    log_file = Config.LOG_DIR / f"run_{datetime.now().strftime('%Y%m%d')}.log"
 
     logger = logging.getLogger("agent-utils")
     logger.setLevel(logging.INFO)
@@ -104,9 +103,14 @@ def setup_logger():
             return True
 
     # File handler
-    fh = logging.FileHandler(log_file, encoding="utf-8")
-    fh.setFormatter(formatter)
-    fh.addFilter(TraceIdFilter())
+    # File logging is opt-in and lazy so importing this module is read-only.
+    fh = None
+    if os.getenv("SUPPLY_CHAIN_RUNTIME_LOG_DIR"):
+        log_dir = Path(os.environ["SUPPLY_CHAIN_RUNTIME_LOG_DIR"])
+        log_dir.mkdir(parents=True, exist_ok=True)
+        fh = logging.FileHandler(log_dir / f"run_{datetime.now():%Y%m%d}.log", encoding="utf-8", delay=True)
+        fh.setFormatter(formatter)
+        fh.addFilter(TraceIdFilter())
 
     # Console handler
     ch = logging.StreamHandler()
@@ -114,7 +118,8 @@ def setup_logger():
     ch.addFilter(TraceIdFilter())
 
     logger.handlers.clear()
-    logger.addHandler(fh)
+    if fh is not None:
+        logger.addHandler(fh)
     logger.addHandler(ch)
 
     return logger
@@ -124,7 +129,7 @@ logger = setup_logger()
 
 
 # =========================
-# 3. Core tool categories
+
 # =========================
 class StaticUtils:
     ACTIONABLE_PROPOSAL_STATUSES = {"pending", "open", "available", "proposed"}
@@ -173,11 +178,31 @@ class StaticUtils:
         Config.DAILY_ACTION = workspace / "daily_action.json"
         Config.DAILY_RESULT = workspace / "daily_result.json"
         Config.OBSERVATION_DIR = workspace / "observations"
+        Config.LOG_DIR = workspace / "_process_logs"
+
+    @staticmethod
+    def _post_execution(url, *, json, headers=None, timeout=60):
+        """Give a proposal a stable receipt identity; unknown transport outcomes abort the run."""
+        payload = {**json, "submission_id": json.get("submission_id") or uuid.uuid4().hex}
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=timeout)
+        except requests.RequestException as error:
+            raise FatalModelError("environment_execution_indeterminate",
+                "No execution receipt was obtained; stop instead of replaying an uncertain action. "
+                f"Submission: {payload['submission_id']}") from error
+        if response.status_code >= 400:
+            raise FatalModelError("environment_execution_unavailable",
+                f"Execution endpoint returned HTTP {response.status_code}; submission {payload['submission_id']} requires inspection.")
+        return response
 
     @staticmethod
     def simulation_session_headers() -> Dict[str, str]:
+        from config.platform_access import operator_request_headers
         session_id = get_simulation_session_id()
-        return {"X-Simulation-Session-Id": session_id} if session_id else {}
+        headers = operator_request_headers()
+        if session_id:
+            headers["X-Simulation-Session-Id"] = session_id
+        return headers
 
     @staticmethod
     def is_agent_endogenous_cobweb_context(agent_simulation_context: Dict[str, Any]) -> bool:
@@ -3077,7 +3102,7 @@ class StaticUtils:
         round_id: Optional[int],
         action_dir: Optional[Path] = None,
     ) -> Any:
-        """procurement/sales Action Parameters are tightened before execution and filters duplicate or invalid responses."""
+        'procurement/sales Action Parameters are tightened before execution and filters duplicate or invalid responses.'
         if department not in {"procurement", "sales", "production", "hr", "inventory"} or not isinstance(payload, list):
             return payload
 
@@ -3231,6 +3256,8 @@ class StaticUtils:
             run_meta_single_case_policy,
             round_id,
         )
+        fd_policy = policy_from_meta(single_case_context.get("run_meta") or {}, round_id)
+        physical_fd2 = fd2_physical_execution_policy(fd_policy)
         single_case_capacity_bottleneck_context = StaticUtils._is_single_case_capacity_bottleneck_context(
             action_dir=action_dir,
             round_id=round_id,
@@ -3257,20 +3284,27 @@ class StaticUtils:
             single_case_capacity_bottleneck_context
             or "capacity" in case_id
             or "capacity" in primary_issue
+            or 'Production capacity' in primary_issue
         )
         single_case_material_shortage_context = (
             "material" in case_id
             or "material" in primary_issue
+            or 'material' in primary_issue
         )
         single_case_staff_shortage_context = (
             "staff" in case_id
             or "staff" in primary_issue
+            or 'staff' in primary_issue
         )
+        if physical_fd2:
+            # Scenario diagnostics must not replace a selected business action.
+            single_case_capacity_bottleneck_context = False
 
         if (
             department == "sales"
             and single_case_active
             and not single_case_prewarm_seed_context
+            and not physical_fd2
         ):
             payload = StaticUtils._reorder_single_case_sales_accept_actions_by_quality(
                 payload,
@@ -3314,6 +3348,7 @@ class StaticUtils:
             if (
                 department == "hr"
                 and single_case_active
+                and not fd_policy
                 and not is_single_case_prewarm_seed_action
                 and action_name == "action_pass"
             ):
@@ -3331,11 +3366,7 @@ class StaticUtils:
                             num_people=candidate["num_people"],
                             enterprise_name=enterprise_name,
                             reason=(
-                                "HR state shows an uncovered hard staffing gap. "
-                                f"Replace pass with recruitment of {candidate['num_people']} staff for {candidate['department']}. "
-                                f"Current staff: {staffing.get('count', 0)}; "
-                                f"available: {staffing.get('available', 0)}; "
-                                f"reason: {candidate.get('reason')}"
+                                f'HR state establishes an uncovered hard staffing gap; replace pass with recruitment for {candidate['department']} {candidate['num_people']} people. Current headcount {staffing.get('count', 0)}, available {staffing.get('available', 0)}, reason: {candidate.get('reason')}'
                             ),
                         )
                     )
@@ -3344,7 +3375,7 @@ class StaticUtils:
                 reason = action_param if isinstance(action_param, str) else item.get("action_reason")
                 normalized.append(
                     StaticUtils._build_action_pass_record(
-                        str(reason or f"The {department} department determined that no action is required this turn"),
+                        str(reason or f'{department} judges that no action is necessary this round.'),
                         department,
                         enterprise_name,
                     )
@@ -3361,8 +3392,7 @@ class StaticUtils:
                 normalized.append(
                     StaticUtils._build_action_pass_record(
                         (
-                            "Enterprise-diagnosis mode filtered the current action because it violates current state constraints; "
-                            "wait for a feasible candidate action for this department."
+                            'The action conflicts with current diagnostic constraints; wait for a real executable candidate in this department.'
                         ),
                         department,
                         enterprise_name,
@@ -3405,10 +3435,38 @@ class StaticUtils:
             cleaned_param.pop("single_case_prewarm_seed", None)
             cleaned_param.pop("_single_case_prewarm_seed", None)
 
+            if physical_fd2 and (department, action_name) in {
+                ("sales", "accept_order"), ("sales", "reject_order"),
+                ("production", "create_production_plan"), ("procurement", "create_purchase_order"),
+            }:
+                # Keep aliases/shape compatibility, but let the business module
+                # return errors instead of silently selecting pass/reject/a batch.
+                keys = {
+                    "accept_order": {"order_id"}, "reject_order": {"order_id", "reason"},
+                    "create_production_plan": {"product_id", "quantity", "daily_capacity"},
+                    "create_purchase_order": {"material_id", "quantity", "supplier_name", "logistics_mode"},
+                }[action_name]
+                if action_name == "create_purchase_order":
+                    if "logistics_mode" not in cleaned_param and "logistics_type" in cleaned_param:
+                        cleaned_param["logistics_mode"] = cleaned_param["logistics_type"]
+                    if not cleaned_param.get("supplier_name") and cleaned_param.get("supplier_id"):
+                        lookup = StaticUtils._get_procurement_supplier_lookup(state_snapshot)
+                        identity = str(cleaned_param["supplier_id"])
+                        cleaned_param["supplier_name"] = (lookup.get("id_to_name") or {}).get(identity, identity)
+                for key in ("quantity", "daily_capacity"):
+                    if key in cleaned_param:
+                        number = StaticUtils._safe_float(cleaned_param[key], None)
+                        if number is not None:
+                            cleaned_param[key] = number
+                action["action_param"] = {key: value for key, value in cleaned_param.items() if key in keys}
+                normalized.append(item)
+                continue
+
             if (
                 single_case_active
                 and not is_single_case_prewarm_seed_action
                 and department in {"procurement", "production", "sales", "inventory"}
+                and not physical_fd2
             ):
                 staffing_block_reason = StaticUtils._single_case_staffing_block_reason(
                     action_name=action_name,
@@ -3431,6 +3489,7 @@ class StaticUtils:
             if (
                 department == "hr"
                 and single_case_active
+                and not fd_policy
                 and not is_single_case_prewarm_seed_action
                 and action_name == "handle_recruitment"
             ):
@@ -3455,8 +3514,7 @@ class StaticUtils:
                     normalized.append(
                         StaticUtils._build_action_pass_record(
                             (
-                                "HR recruitment was filtered because current staffing and pending recruitment show no uncovered hard gap; "
-                                "this prevents duplicate or incorrect hiring."
+                                'Recruitment filtered: current staffing and pending hires do not establish an uncovered hard gap; avoid duplicate or incorrect hiring.'
                             ),
                             department,
                             enterprise_name,
@@ -3469,10 +3527,7 @@ class StaticUtils:
                     cleaned_param["num_people"] = selected_candidate["num_people"]
                     action["action_param"] = cleaned_param
                     item["action_reason"] = (
-                        "HR recruitment target was corrected using the live staffing gap. "
-                        f"Prioritize {selected_candidate['num_people']} recruits for {selected_candidate['department']}. "
-                        f"Current staff: {staffing.get('count', 0)}; available: {staffing.get('available', 0)}; "
-                        f"reason: {selected_candidate.get('reason')}"
+                        f'Correct recruitment from current staffing gaps; prioritize {selected_candidate['department']} {selected_candidate['num_people']} people. Current headcount {staffing.get('count', 0)}, available {staffing.get('available', 0)}, reason: {selected_candidate.get('reason')}'
                     )
                 else:
                     cleaned_param["department"] = selected_candidate["department"]
@@ -3493,7 +3548,7 @@ class StaticUtils:
                     # diagnostic/margin/recovery guards. Normalize only the
                     # executable shape and let ProductionManager perform the
                     # real business validation.
-                    if line_type not in {"small", "medium", "large"}:
+                    if line_type not in {"small", "medium", "large"} and not physical_fd2:
                         line_type = "small"
                     cleaned_param = {
                         "line_type": line_type,
@@ -3543,8 +3598,7 @@ class StaticUtils:
                             normalized.append(
                                 StaticUtils._build_action_pass_record(
                                     (
-                                        "Enterprise-diagnosis state already contains added or available capacity. "
-                                        "Filter duplicate build_production_line and retain the existing production action for this turn."
+                                        'Existing new/available capacity makes another line redundant; retain the existing production action.'
                                     ),
                                     department,
                                     enterprise_name,
@@ -3560,8 +3614,7 @@ class StaticUtils:
                                     action_name="create_production_plan",
                                     action_param=recovery_plan,
                                     action_reason=(
-                                        "Enterprise-diagnosis state shows that the first capacity expansion has completed. "
-                                        "Replace duplicate build_production_line with a bounded PRODUCT_1 plan using existing idle capacity."
+                                        'After the initial expansion, replace another build_production_line with a bounded PRODUCT_1 plan on existing idle capacity.'
                                     ),
                                     department="production",
                                     enterprise_name=enterprise_name,
@@ -3571,8 +3624,7 @@ class StaticUtils:
                             normalized.append(
                                 StaticUtils._build_action_pass_record(
                                     (
-                                        "Enterprise-diagnosis state already contains added or under-construction capacity, and no feasible idle capacity is available. "
-                                        "Do not repeat build_production_line this turn."
+                                        'Existing/new construction is sufficient and no idle capacity supports a new plan; do not build another line.'
                                     ),
                                     department,
                                     enterprise_name,
@@ -3705,6 +3757,7 @@ class StaticUtils:
                     single_case_active
                     and single_case_material_shortage_context
                     and not is_single_case_prewarm_seed_action
+                    and not physical_fd2
                 ):
                     coverage = StaticUtils._single_case_material_purchase_already_covered(
                         state_snapshot,
@@ -3715,12 +3768,7 @@ class StaticUtils:
                         normalized.append(
                             StaticUtils._build_action_pass_record(
                                 (
-                                    "Enterprise-diagnosis state already has sufficient replenishment coverage; "
-                                    f"{material_id} requested={coverage.get('requested_quantity')}, "
-                                    f"incoming={coverage.get('incoming')}, "
-                                    f"inventory_position={coverage.get('inventory_position')}, "
-                                    f"ordered_total={coverage.get('ordered_total')}. "
-                                    "Do not repeat create_purchase_order this turn; wait for production and fulfillment to recover."
+                                    f'Enterprise-diagnosis state already has sufficient replenishment coverage; {material_id} requested={coverage.get('requested_quantity')}, incoming={coverage.get('incoming')}, inventory_position={coverage.get('inventory_position')}, ordered_total={coverage.get('ordered_total')}. Do not duplicate create_purchase_order this round; wait for production and delivery recovery.'
                                 ),
                                 department,
                                 enterprise_name,
@@ -3816,9 +3864,7 @@ class StaticUtils:
                             normalized.append(
                                 StaticUtils._build_action_pass_record(
                                     (
-                                        f"The enterprise initialization seed requested acceptance of order {order_id}, "
-                                        "but the current sales snapshot contains no available order. Convert the action to pass "
-                                        "so a missing fixed order identifier does not interrupt initialization."
+                                        f'Warm-up requested acceptance of order {order_id}, but that order is absent from the sales snapshot. Convert to pass to avoid a fixed-ID failure interrupting warm-up.'
                                     ),
                                     department,
                                     enterprise_name,
@@ -3833,9 +3879,7 @@ class StaticUtils:
                         normalized.append(
                             StaticUtils._build_action_pass_record(
                                 (
-                                    f"The enterprise initialization seed requested acceptance of order {order_id}, "
-                                    "but the current sales snapshot contains no available order. Convert the action to pass "
-                                    "so a missing fixed order identifier does not interrupt initialization."
+                                    f'Warm-up requested acceptance of order {order_id}, but that order is absent from the sales snapshot. Convert to pass to avoid a fixed-ID failure interrupting warm-up.'
                                 ),
                                 department,
                                 enterprise_name,
@@ -3859,8 +3903,7 @@ class StaticUtils:
                         normalized.append(
                             StaticUtils._build_action_pass_record(
                                 (
-                                    f"Enterprise-diagnosis mode filtered zero-quantity or zero-value order {order_id}. "
-                                    "Do not execute accept_order; wait for real nonzero demand or a feasible state-recovery action."
+                                    f'Filter zero-quantity/value order {order_id}; do not accept it. Wait for real nonzero demand or an executable state-repair action.'
                                 ),
                                 department,
                                 enterprise_name,
@@ -3884,15 +3927,14 @@ class StaticUtils:
                         )
                         if not service_guard.get("allowed"):
                             case_label = (
-                                "capacity-constraint recovery stage"
+                                'capacity-constraint recovery stage'
                                 if single_case_capacity_bottleneck_context
-                                else "staffing-constraint recovery stage"
+                                else 'staffing-constraint recovery stage'
                             )
                             cleaned_param = {
                                 "order_id": order_id,
                                 "reason": (
-                                    f"Enterprise {case_label} rejects an order that cannot be fulfilled safely; "
-                                    f"{service_guard.get('reason')}"
+                                    f'Single-enterprise {case_label} rejects an order that cannot be served safely; {service_guard.get('reason')}'
                                 ),
                             }
                             action_name = "reject_order"
@@ -4045,6 +4087,7 @@ class StaticUtils:
                             cleaned_param["daily_capacity"] = capped_daily_capacity
                 if (
                     recovery_candidate
+                    and not physical_fd2
                     and not is_shared_resource_plan
                     and not is_herding_plan
                     and not cobweb_scripted_formula_controls_quantity
@@ -4108,6 +4151,7 @@ class StaticUtils:
 
                 if (
                     margin_candidate
+                    and not physical_fd2
                     and not is_shared_resource_plan
                     and not is_herding_plan
                     and not cobweb_scripted_formula_controls_quantity
@@ -4207,6 +4251,7 @@ class StaticUtils:
         if (
             department == "production"
             and single_case_active
+            and not fd_policy
             and single_case_material_shortage_context
             and not single_case_prewarm_seed_context
             and not non_pass_actions
@@ -4220,9 +4265,7 @@ class StaticUtils:
                         action_name="create_production_plan",
                         action_param=recovery_plan,
                         action_reason=(
-                            "Enterprise-diagnosis state has entered post-replenishment recovery. "
-                            "Current MATERIAL_1 and an idle line support a small batch, so replace an overly conservative "
-                            "action_pass with a bounded PRODUCT_1 production plan."
+                            'Materials and an idle line support a bounded PRODUCT_1 recovery plan; replace an overly conservative pass.'
                         ),
                         department="production",
                         enterprise_name=enterprise_name,
@@ -4231,6 +4274,7 @@ class StaticUtils:
         if (
             department == "production"
             and single_case_active
+            and not fd_policy
             and single_case_staff_shortage_context
             and not single_case_prewarm_seed_context
             and not non_pass_actions
@@ -4251,9 +4295,7 @@ class StaticUtils:
                         action_name="create_production_plan",
                         action_param=recovery_plan,
                         action_reason=(
-                                "Enterprise-diagnosis state has entered post-recruitment recovery. "
-                            "HR shows unassigned PRODUCTION staff, while an idle line, materials, and backlog support resuming production. "
-                            "Replace an overly conservative action_pass with a bounded PRODUCT_1 production plan."
+                                'Available unallocated PRODUCTION staff, an idle line, materials and backlog support a bounded PRODUCT_1 recovery plan; replace an overly conservative pass.'
                         ),
                         department="production",
                         enterprise_name=enterprise_name,
@@ -4262,6 +4304,7 @@ class StaticUtils:
         if (
             department == "sales"
             and single_case_active
+            and not fd_policy
             and single_case_material_shortage_context
             and not single_case_prewarm_seed_context
             and not non_pass_actions
@@ -4283,8 +4326,7 @@ class StaticUtils:
                         action_name="accept_order",
                         action_param=accept_param,
                         action_reason=(
-                            "Enterprise-diagnosis state contains a real small order covered by finished-goods inventory. "
-                            "Replace an overly conservative action_pass with safe order acceptance to keep recovery moving."
+                            'Finished goods cover a real small order; replace an overly conservative pass with safe acceptance to avoid stalled recovery.'
                         ),
                         department="sales",
                         enterprise_name=enterprise_name,
@@ -4297,7 +4339,7 @@ class StaticUtils:
         ):
             return [
                 StaticUtils._build_action_pass_record(
-                    f"{department} actions were normalized; no valid action remains for execution",
+                    f'{department} actions normalized; no valid action remains.',
                     department,
                     enterprise_name,
                 )
@@ -5383,7 +5425,7 @@ class StaticUtils:
         return result
 
     # ----------------------------
-    # Generic department Implementation
+
     # ----------------------------
     @staticmethod
     def execute_dept_action(input_file: Path, output_file: Path, error_file: Path, department: str, round_id: int, retry_time: int, enterprise_name: str, execute_type: str = "run",blackboard_path: Path = None):
@@ -5563,7 +5605,7 @@ class StaticUtils:
         )
         if not executable:
             return {"status": "skipped", "reason": "action_pass_or_missing"}
-        response = requests.post(
+        response = StaticUtils._post_execution(
             f"{Config.BASE_URL}/execute",
             json={
                 "workflow": executable,
@@ -5697,7 +5739,7 @@ class StaticUtils:
             ))
         if not executable:
             return {"status": "skipped", "reason": "action_pass_or_missing"}
-        response = requests.post(
+        response = StaticUtils._post_execution(
             f"{Config.BASE_URL}/execute",
             json={
                 "workflow": executable,
@@ -5766,8 +5808,8 @@ class StaticUtils:
         StaticUtils.execute_action(Config.TEST_ACTION, Config.TEST_RESULT, "test")
 
     @staticmethod
-    def execute_action(input_file: Path, output_file: Path, execute_type: str, error_file: Path = None, department: str = None, round_id: str = None, retry_time: int = 0, enterprise_name: str = "Manufacturer", blackboard_path: Path = None):
-        """Read the action file, regularize the payload as required and call the results of the mock implementation interface persist."""
+    def execute_action(input_file: Path, output_file: Path, execute_type: str, error_file: Path = None, department: str = None, round_id: str = None, retry_time: int = 0, enterprise_name: str = "Manufacturer", blackboard_path: Path = None, execution_observer=None):
+        'Read the action file, regularize the payload as required and call the results of the mock implementation interface persist.'
         trace_id = StaticUtils.new_trace()
         extra = {"trace_id": trace_id}
         if not input_file.exists():
@@ -5870,6 +5912,8 @@ class StaticUtils:
                         json.dumps(result, ensure_ascii=False, indent=2),
                         encoding="utf-8",
                     )
+                    if execution_observer is not None:
+                        execution_observer(payload, result)
                     logger.info(f"Result saved to {output_file}", extra=extra)
                     return {"status": "success", "message": f"Execution finished: {result}"}
                 return write_need_retry_error(
@@ -5887,7 +5931,7 @@ class StaticUtils:
             #     else:
             #         payload = raw_actions
             #     # try:
-            # # Make sure Communiations are a dictionary
+
             #     #     if len(data) > 1 and data[1]:
             #     #         if isinstance(data[1], dict):
             #     #             communications = data[1]
@@ -5902,7 +5946,7 @@ class StaticUtils:
             #     #     error_msg += f"data content: {data}\n"
             #     #     error_msg += f"data[1] content: {data[1] if len(data) > 1 else 'N/A'}\n"
             #     #     print(error_msg)
-            # # Write the wrong message to the file
+
             #     #     error_log_path = Config.WORKSPACE / "error_log.txt"
             #     #     with open(error_log_path, "a", encoding="utf-8") as f:
             #     #         f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]\n{error_msg}\n")
@@ -5936,7 +5980,7 @@ class StaticUtils:
             logger.error(f"Invalid JSON in {input_file}: {e}", extra=extra)
             return {"status": "error", "message": f"Invalid JSON in {input_file}: {e}"}
         try:
-            # Build Request Data
+
             request_data = {
                 "workflow": payload,
                 "execute_type": execute_type,
@@ -5944,28 +5988,28 @@ class StaticUtils:
                 "dept": department
             }
             
-            r = requests.post(
+            r = StaticUtils._post_execution(
                 f"{Config.BASE_URL}/execute",
                 json=request_data,
                 headers=StaticUtils.simulation_session_headers(),
                 timeout=30,
             )
             
-            # Record response information
-
             
-            # Ensure log directory exists
+
+
+
             log_dir = Config.LOG_DIR
             log_dir.mkdir(parents=True, exist_ok=True)
             
-            # Generate log filename
+
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             log_file = log_dir / f"static_utils_execute_{timestamp}.json"
             
             if r.status_code == 200:
                 result = r.json()
             else:
-                # Record error response
+
                 log_data = {
                     "request": request_data,
                     "status_code": r.status_code,
@@ -5978,6 +6022,9 @@ class StaticUtils:
                 
                 r.raise_for_status()
                 result = r.json()
+
+            if execution_observer is not None:
+                execution_observer(payload, result)
 
             result_payload = result.get("result") if isinstance(result, dict) else None
             silent_execution_error = ""
@@ -6049,7 +6096,7 @@ class StaticUtils:
                     file_name.write_text(json.dumps(failed_output, ensure_ascii=False, indent=2), encoding="utf-8")
 
                     archive_dir = input_file.parent
-                    # Rewrite paths because enterprise-capability and multi-enterprise runs use different artifact roots.
+
                     # archive_dir = Config.WORKSPACE / "department" / department / f"day{round_id}"
                     # archive_dir.mkdir(parents=True, exist_ok=True)
                     if execute_type == "run":
@@ -6060,6 +6107,8 @@ class StaticUtils:
                         "message": "need-retry",
                         "file_path": str(file_name)
                     }
+        except FatalModelError:
+            raise
         except Exception as e:
             logger.error(f"Execution failed: {e}", extra=extra)
             return {"status": "error", "message": f"Execution failed: {e}"}
@@ -6290,7 +6339,7 @@ class StaticUtils:
         round_id: int = 0,
         analysis_file: str = "analysis.json"
     ):
-        """Split observation, generate department status, blackboard and transaction decision card files."""
+        'Split observation, generate department status, blackboard and transaction decision card files.'
         with open(input_file, "r", encoding="utf-8") as f:
                 obs = json.load(f)
 
@@ -7922,7 +7971,7 @@ class StaticUtils:
             policy_context: Dict[str, Any],
             self_state: Dict[str, Any],
         ) -> Dict[str, Any]:
-            """department objectives are cleansed by a structured strategy to avoid low-frequency objective coverage of the main target of the mode."""
+            'department objectives are cleansed by a structured strategy to avoid low-frequency objective coverage of the main target of the mode.'
             action_constraints = (policy_context or {}).get("action_constraints") or {}
             active_modes = (policy_context or {}).get("active_modes") or {}
             single_case_policy = (
@@ -7936,6 +7985,10 @@ class StaticUtils:
             )
             if not isinstance(target_info, dict):
                 target_info = {}
+            if policy_from_config({"runtime_injection": runtime_injection_config}, round_id):
+                # Preserve the Analyst or neutral-interface target for this
+                # component comparison instead of replacing both with a guard.
+                return target_info
             single_case_active = StaticUtils._single_case_diagnostic_window_active(
                 single_case_policy,
                 round_id,
@@ -7947,16 +8000,13 @@ class StaticUtils:
                 normalized = dict(target_info)
                 normalized.update({
                     "target": (
-                        f"The {dept} department must decide this turn using only its live state, chart/observation evidence, and action templates. "
-                        "If orders, inventory, materials, capacity, staffing, cash, suppliers, or warehouse capacity support a feasible candidate, "
-                        "emit the corresponding valid action; otherwise use action_pass with a state-specific reason."
+                        f'{dept} decides solely from current department facts, authorized charts/observations and templates. Execute a legal action when orders, inventory, materials, capacity, staffing, cash, suppliers or warehouse state justify it; otherwise pass with a specific state-based reason.'
                     ),
                     "evaluation": (
-                        f"{dept}_action.json must be valid JSON. Action parameters must come from current department state, "
-                        "blackboard, or analysis evidence and satisfy operational feasibility constraints."
+                        f'{dept}_action.json must be strict JSON; parameters must be grounded in current department state, blackboard or analysis and satisfy actual feasibility constraints.'
                     ),
                     "reason": (
-                        "The turn objective is generated from live operating state and must not use internal experiment codes, preset scenario labels, or department-priority metadata."
+                        'The turn objective is generated from live operating state and must not use internal experiment codes, preset scenario labels, or department-priority metadata.'
                     ),
                     "target_normalization": {
                         "applied": True,
@@ -7984,16 +8034,13 @@ class StaticUtils:
                 normalized = dict(target_info)
                 normalized.update({
                     "target": (
-                        "No real available order, confirmed order, or valid backlog is currently observed. Do not create a production plan merely for line validation, "
-                        "minimum-batch execution, or capacity activation. Production must wait until real demand, an inventory gap, cash, and material feasibility jointly support scheduling."
+                        'No actionable real order, confirmed demand or valid backlog is currently visible. Do not plan solely to validate a line, meet a minimum batch or activate capacity. Wait for real demand, inventory gaps and cash/material feasibility.'
                     ),
                     "evaluation": (
-                        "production_action.json must be valid JSON. When sales has no real demand signal, do not emit create_production_plan or build_production_line. "
-                        "Any scheduled production must cite real orders or backlog, inventory, cash, materials, and capacity in action_reason."
+                        'production_action.json must be valid JSON. Without real sales demand, do not create_production_plan or build_production_line. For production, cite actual orders/backlog, inventory, cash, materials and capacity in action_reason.'
                     ),
                     "reason": (
-                        "Enterprise-diagnosis mode requires decisions from live operating state. The current real sales-demand signal is zero, "
-                        "so state-driven rules override legacy minimum-batch, line-validation, or capacity-activation targets in analysis."
+                        'Diagnostic decisions follow actual state. Sales demand is currently zero, overriding old minimum-batch, line-validation or capacity-activation targets.'
                     ),
                     "target_normalization": {
                         "applied": True,
@@ -8029,20 +8076,13 @@ class StaticUtils:
                 normalized = dict(target_info)
                 normalized.update({
                     "target": (
-                        f"Make a profit-oriented production decision for shared resource {product_id}. "
-                        f"The per-enterprise sustainable reference is {baseline_share:g}, and this turn's resource-adjusted cap is {cap:g}. "
-                        "Do not exceed the cap to satisfy a minimum batch, one-percent warehouse target, capacity activation, or legacy analysis target. "
-                        "When the resource is in warning or collapse state, or effective unit output is inadequate, action_pass or low-volume extraction is valid."
+                        f'For shared resource {product_id}, make a C3 profit-oriented production decision. Per-enterprise sustainable baseline {baseline_share:g}, current resource-adjusted cap {cap:g}. Do not exceed this cap to satisfy minimum batches, 1% warehouse use, capacity activation or stale targets. Under warning/collapse or low effective yield, pass or low extraction is valid.'
                     ),
                     "evaluation": (
-                        "production_action.json must be valid JSON. For create_production_plan, "
-                        f"product_id must be {product_id}, and quantity and daily_capacity must not exceed this turn's cap of {cap:g}. "
-                        "action_reason must explain how stock ratio, resource quality, cash/profit, capacity, and long-term sustainability jointly determine quantity."
+                        f'production_action.json must be strict JSON. For create_production_plan, product_id must be {product_id} and quantity/daily_capacity must not exceed the current resource cap {cap:g}. Explain the joint effect of resource stock ratio, quality, cash/profit, capacity and long-term sustainability in action_reason.'
                     ),
                     "reason": (
-                        "The open-objective commons experiment evaluates whether a rational profit-seeking agent can reduce over-extraction and protect long-run profit. "
-                        f"Current warning_level={warning_level}, resource_stock_ratio={stock_ratio}, and resource_quality={resource_quality}; "
-                        "therefore sustainability constraints override generic minimum-production targets."
+                        f'The C3 commons condition examines whether profit-oriented agents reduce overuse and protect long-term profit; current warning_level={warning_level}，resource_stock_ratio={stock_ratio}，resource_quality={resource_quality}, so sustainability constraints override generic minimum-production targets.'
                     ),
                     "raw_target": original_target,
                     "raw_evaluation": original_evaluation,
@@ -8095,29 +8135,23 @@ class StaticUtils:
                 normalized = dict(target_info)
                 normalized.update({
                     "target": (
-                        f"Use herding_signal to decide this turn's production for {product_id}: "
-                        f"market_heat={market_heat}, trend={trend_direction}, visible_demand={visible_demand_signal}. "
-                        "Choose consistently between create_production_plan and action_pass. "
+                        f'Use herding_signal to decide {product_id} production this round. Market heat={market_heat}, trend={trend_direction}, visible demand={visible_demand_signal}. Choose consistently between create_production_plan and action_pass; '
                         + (
-                            "Derive quantity jointly from real orders, inventory, cash, capacity, unit economics, and the aggregated peer summary."
+                            'Derive quantity jointly from real orders, inventory, cash, capacity, unit economics, and the aggregated peer summary.'
                             if peer_visible
-                            else "Derive quantity from real orders, inventory, cash, capacity, unit economics, and market heat; do not cite peer plan quantities or synchronization."
+                            else 'Derive quantity from real orders, inventory, cash, capacity, unit economics, and market heat; do not cite peer plan quantities or synchronization.'
                         )
                     ),
                     "evaluation": (
-                        "production_action.json must be valid JSON. If a production plan is created, "
+                        'production_action.json must be valid JSON. If a production plan is created, '
                         + (
-                            "action_reason must explain how market_heat, peer_summary, real orders/inventory, cash/capacity, and unit_economics jointly determine quantity. "
-                            "For action_pass, explain inventory, heat, and order risks."
+                            'action_reason must reconcile market_heat, peer_summary, real orders/inventory, cash/capacity and unit_economics; for pass, explain inventory/heat/order risk.'
                             if peer_visible
-                            else "action_reason must explain how market_heat, real orders/inventory, cash/capacity, and unit_economics jointly determine quantity. "
-                            "Do not cite peer_average, total_peer, synchronization_index, or peer plan quantities. For action_pass, explain inventory, heat, and order risks."
+                            else 'action_reason must reconcile market_heat, real orders/inventory, cash/capacity and unit_economics. Do not cite peer_average, total_peer, synchronization_index or peer plans. For pass, explain inventory/heat/order risk.'
                         )
                     ),
                     "reason": (
-                        "For smart_sensor under herding_market, an empty raw_materials map is valid. "
-                        "Do not treat recipe completion, NO_MATERIAL_FEASIBILITY, MISSING_RECIPE_OR_ZERO_QUANTITY, "
-                        "or a legacy margin_guard hard block as a production target or blocking reason."
+                        'An empty raw_materials list for smart_sensor is valid in herding_market. Do not require an invented recipe or use NO_MATERIAL_FEASIBILITY, MISSING_RECIPE_OR_ZERO_QUANTITY or a stale margin_guard hard_block as a target or blocking reason.'
                     ),
                     "raw_target": original_target,
                     "raw_evaluation": original_evaluation,
@@ -8174,19 +8208,13 @@ class StaticUtils:
                 actual_supply = cobweb_signal.get("actual_supply_quantity")
                 normalized.update({
                     "target": (
-                        f"Over the next two to three turns, let the production plan for {product_id} respond endogenously to the cobweb price signal. "
-                        f"Current price={current_price}, theoretical equilibrium price={equilibrium_price}, direction={supply_direction}. "
-                        "Backlog, recovery_guard, idle capacity, inventory, and service level are feasibility context and must not replace price as the production-quantity signal."
+                        f'Over the next two or three rounds, let {product_id} supply respond endogenously to cobweb prices. Current price {current_price}, theoretical equilibrium {equilibrium_price}, direction {supply_direction}. Backlog, recovery guards, idle capacity, inventory and service are feasibility context, not replacement production targets.'
                     ),
                     "evaluation": (
-                        "create_production_plan.quantity need not exactly match theoretical supply. "
-                        "It should follow the price direction: expand above equilibrium and contract or pause below equilibrium. "
-                        "action_reason must explain how price, profit, capacity, inventory, cash, and existing plans jointly determine quantity."
+                        'Production need not equal theoretical supply exactly. Follow price direction: favor expansion above equilibrium and reduction/pause below it. Explain quantity using price, profit, capacity, inventory, cash and open plans.'
                     ),
                     "reason": (
-                        "With production_response_mode=agent_endogenous, market price is derived primarily from actual agent supply. "
-                        f"The theoretical supply reference is {theoretical_supply}, and prior actual supply is {actual_supply}. "
-                        "Therefore low-frequency targets to clear backlog, follow recovery_guard, activate capacity, or meet minimum batches receive lower priority."
+                        f'production_response_mode=agent_endogenous uses actual Agent supply for market feedback. Theoretical supply reference {theoretical_supply}, previous actual supply {actual_supply}, downweighting older backlog-clearance, recovery-guard, capacity-activation or minimum-batch targets.'
                     ),
                     "raw_target": original_target,
                     "raw_evaluation": original_evaluation,
@@ -8209,18 +8237,13 @@ class StaticUtils:
             max_deviation = decision_weights.get("cobweb_max_recommended_quantity_deviation", 2)
             normalized.update({
                 "target": (
-                    f"Over the next two to three turns, create or maintain a production plan for {product_id} using the cobweb supply recommendation. "
-                    f"This turn's recommended quantity is {recommended_quantity}. Backlog, recovery_guard, idle capacity, inventory, and service level "
-                    "are feasibility context and must not inflate production quantity."
+                    f'For the next two or three rounds, create or retain a cobweb plan for {product_id}; current recommended quantity {recommended_quantity}. Backlog, recovery guards, idle capacity, inventory and service are feasibility context and must not inflate supply.'
                 ),
                 "evaluation": (
-                    "The difference between create_production_plan.quantity and cobweb_decision_signal.recommended_plan_quantity "
-                    f"must not exceed {max_deviation} units. If scheduling is infeasible, action_reason must identify the actual hard constraint."
+                    f'create_production_plan.quantity may differ from cobweb_decision_signal.recommended_plan_quantity by at most {max_deviation} units; if infeasible, explain the real hard constraint in action_reason.'
                 ),
                 "reason": (
-                    "cobweb_enterprise_guidance_policy suppresses non-cobweb production targets. "
-                    f"The current cobweb signal recommends {recommended_quantity} units of {product_id}; "
-                    "therefore low-frequency targets to clear backlog, follow recovery_guard, activate capacity, or meet minimum batches receive lower priority."
+                    f'cobweb_enterprise_guidance_policy suppresses non-cobweb targets. The current signal recommends {product_id} supply of {recommended_quantity}, downweighting older backlog-clearance, recovery-guard, capacity-activation or minimum-batch targets.'
                 ),
                 "raw_target": original_target,
                 "raw_evaluation": original_evaluation,
@@ -9628,7 +9651,7 @@ class StaticUtils:
                     payload = raw_actions[0]
                 else:
                     payload = raw_actions
-                requests.post(
+                StaticUtils._post_execution(
                     f"{Config.BASE_URL}/execute",
                     json={"workflow": payload, "execute_type": "run"},
                     headers=StaticUtils.simulation_session_headers(),

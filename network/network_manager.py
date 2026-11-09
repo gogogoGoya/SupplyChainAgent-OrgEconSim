@@ -405,5 +405,9 @@ class NetworkManager:
         }
     
     def reset(self):
-        # TODO
-        pass
+        """Reset derived metrics while keeping the configured firms and topology.
+
+        A new independent simulation constructs a new NetworkManager.
+        Environment initialization calls this method after building its topology.
+        """
+        self.network_metrics.clear()

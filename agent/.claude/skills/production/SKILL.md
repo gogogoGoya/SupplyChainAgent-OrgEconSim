@@ -90,7 +90,7 @@ Every parameter must come from a file read, a real object in those files, or a d
 
 # 8. Output schema
 
-The outer value is an array containing exactly one action array. Every item has `action`, `action_reason`, `module_type`, and `executor_id`. `module_type` is exactly `ProductionManager`; `executor_id` is the top-level `enterprise_name` in `analysis.json`. For normal actions, `action` contains `action_name` and an object-valued `action_param`. If no action is justified, use the exact `action_name` `action_pass` and a reason string as `action_param`.
+The outer value is a nonempty, flat array of action objects in execution order. Do not wrap it in another array. Every item has `action`, `action_reason`, `module_type`, and `executor_id`. `module_type` is exactly `ProductionManager`; `executor_id` is the top-level `enterprise_name` in `analysis.json`. For normal actions, `action` contains `action_name` and an object-valued `action_param`. If no action is justified, use the exact `action_name` `action_pass` and a reason string as `action_param`.
 
 Write readable multiline JSON with four-space indentation. Build the complete string before `Write`, then read it back and verify parsing, exact equality, schema, balanced containers, and the final closing bracket.
 

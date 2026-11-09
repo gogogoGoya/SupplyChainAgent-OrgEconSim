@@ -1,3 +1,5 @@
+import {enlargeSvgChart} from '../utils/chartZoom.mjs';
+import LoadingState from './LoadingState';
 import React, { useEffect, useMemo, useState } from 'react';
 import { buildDataUrl, safeFetchJson } from '../utils/dataSource';
 
@@ -89,7 +91,7 @@ const normalizeMetricRow = (payload) => {
 
 const loadMetricsForDays = async (dataRoot, availableDays) => {
   const rows = [];
-  for (const day of availableDays) {
+  await Promise.all(availableDays.map(async (day) => {
     const payload = await safeFetchJson(
       buildDataUrl(dataRoot, `public/exchange/day${day}/end_of_day/herding_metrics.json`)
     ) || await safeFetchJson(
@@ -98,7 +100,7 @@ const loadMetricsForDays = async (dataRoot, availableDays) => {
     if (payload) {
       rows.push(normalizeMetricRow(payload));
     }
-  }
+  }));
   return rows.sort((a, b) => Number(a.round) - Number(b.round));
 };
 
@@ -144,7 +146,7 @@ const normalizeExternalDemandRow = (payload, day) => {
 
 const loadExternalDemandForDays = async (dataRoot, availableDays) => {
   const byRound = {};
-  for (const day of availableDays) {
+  await Promise.all(availableDays.map(async (day) => {
     const payload = await safeFetchJson(
       buildDataUrl(dataRoot, `public/exchange/day${day}/end_of_day/external_demand.json`)
     ) || await safeFetchJson(
@@ -153,7 +155,7 @@ const loadExternalDemandForDays = async (dataRoot, availableDays) => {
     if (payload) {
       byRound[day] = normalizeExternalDemandRow(payload, day);
     }
-  }
+  }));
   return byRound;
 };
 
@@ -174,18 +176,18 @@ const normalizeSalesRow = (payload) => {
 
 const loadSalesForDays = async (dataRoot, availableDays, enterpriseIds) => {
   const byRound = {};
-  for (const day of availableDays) {
+  await Promise.all(availableDays.map(async (day) => {
     const roundSales = {};
-    for (const enterpriseId of enterpriseIds) {
+    await Promise.all(enterpriseIds.map(async (enterpriseId) => {
       const payload = await safeFetchJson(
         buildDataUrl(dataRoot, `enterprises/${enterpriseId}/department/sales/day${day}/sales.json`)
       );
       if (payload) {
         roundSales[enterpriseId] = normalizeSalesRow(payload);
       }
-    }
+    }));
     byRound[day] = roundSales;
-  }
+  }));
   return byRound;
 };
 
@@ -321,7 +323,7 @@ const LineSvgChart = ({
   return (
     <div className="herding-svg-chart-wrap">
       <Legend items={series} />
-      <svg className="herding-svg-chart" viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`} role="img">
+      <div className="svg-review-frame"><button type="button" className="svg-expand-control" onClick={event=>enlargeSvgChart(event.currentTarget.parentElement,event.currentTarget)}>Enlarge chart</button><svg className="herding-svg-chart" viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`} role="img">
         <Axis
           rows={rows}
           scale={scale}
@@ -352,7 +354,7 @@ const LineSvgChart = ({
             </g>
           );
         })}
-      </svg>
+      </svg></div>
     </div>
   );
 };
@@ -381,7 +383,7 @@ const BarLineSvgChart = ({ rows }) => {
           { name: 'Visible Demand Signal', color: HERDING_COLORS.heat },
         ]}
       />
-      <svg className="herding-svg-chart" viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`} role="img">
+      <div className="svg-review-frame"><button type="button" className="svg-expand-control" onClick={event=>enlargeSvgChart(event.currentTarget.parentElement,event.currentTarget)}>Enlarge chart</button><svg className="herding-svg-chart" viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`} role="img">
         <Axis rows={rows} scale={scale} />
         {rows.map((row, index) => {
           const y = helpers.y(row.total_planned_quantity);
@@ -420,7 +422,7 @@ const BarLineSvgChart = ({ rows }) => {
             />
           );
         })}
-      </svg>
+      </svg></div>
     </div>
   );
 };
@@ -530,7 +532,7 @@ const MiniOperationTrend = ({ rows, enterpriseId, enterpriseCount }) => {
           </span>
         ))}
       </div>
-      <svg viewBox={`0 0 ${width} ${height}`} role="img">
+      <div className="svg-review-frame"><button type="button" className="svg-expand-control" onClick={event=>enlargeSvgChart(event.currentTarget.parentElement,event.currentTarget)}>Enlarge chart</button><svg viewBox={`0 0 ${width} ${height}`} role="img">
         <line x1={padding.left} y1={padding.top + innerHeight} x2={padding.left + innerWidth} y2={padding.top + innerHeight} />
         <line x1={padding.left} y1={padding.top} x2={padding.left} y2={padding.top + innerHeight} />
         {[scale.min, scale.max].map((tick) => (
@@ -558,7 +560,7 @@ const MiniOperationTrend = ({ rows, enterpriseId, enterpriseCount }) => {
         {labelIndexes.map((index) => (
           <text key={index} x={x(index)} y={height - 4} textAnchor="middle">D{points[index]?.round}</text>
         ))}
-      </svg>
+      </svg></div>
     </div>
   );
 };
@@ -821,7 +823,7 @@ const EnterpriseHeatTable = ({ rows, enterpriseIds }) => {
       <table className="herding-table">
         <thead>
           <tr>
-            <th>Turn</th>
+            <th>Round</th>
             {enterpriseIds.map((enterpriseId) => (
               <th key={enterpriseId}>{enterpriseId}</th>
             ))}
@@ -872,7 +874,7 @@ function HerdingEffectView({
   currentRunSourceLabel,
 }) {
   const [bundle, setBundle] = useState({ runMeta: null, metrics: [] });
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   const days = useMemo(() => (
@@ -933,7 +935,7 @@ function HerdingEffectView({
   const peerVisibleLabel = summary.peerVisible ? 'Peer Summary Visible' : 'Market Attention Only';
 
   if (loading) {
-    return <div className="herding-empty-state">Loading herding-effect experiment data...</div>;
+    return <LoadingState label="Loading herding-effect experiment data…" variant="chart"/>;
   }
 
   if (error) {
@@ -1099,7 +1101,7 @@ function HerdingEffectView({
         </article>
 
         <article className="herding-chart-card">
-          <div className="herding-card-title">Per-Turn Enterprise Plan Heatmap</div>
+          <div className="herding-card-title">Per-Round Enterprise Plan Heatmap</div>
           <p className="herding-card-note">
             Darker cells indicate larger plans; synchronization and overproduction highlights locate the herding window.
           </p>

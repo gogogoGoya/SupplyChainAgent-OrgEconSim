@@ -1,5 +1,10 @@
+import LoadingState from './LoadingState';
+import {setReviewChart} from '../utils/chartReview';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import * as echarts from 'echarts';
+import * as echarts from '../utils/echartsRuntime';
+import {clearReadCache} from '../utils/readClient.mjs';
+import {getArtifactView} from '../utils/operationsApi';
+import {reviewLocation} from '../utils/reviewDisplay';
 import { buildDataUrl, safeFetchJson } from '../utils/dataSource';
 import {
   convertQuantityByItem,
@@ -20,7 +25,7 @@ const formatNumber = (value) => {
   return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(numeric);
 };
 
-const formatMoney = (value) => `¥${formatNumber(value)}`;
+const formatMoney = (value) => `SCU ${formatNumber(value)}`;
 
 const toArray = (value) => {
   if (!value) {
@@ -97,15 +102,15 @@ const getInventoryQuantity = (inventory, itemId) => {
   return Number(item?.quantity || 0);
 };
 
-const getPrimaryFinishedGoodItemId = (inventory) => {
+const getPrimaryFinishedGoodItemId = (inventory, quantityView) => {
   const items = inventory?.inventory_items || [];
-  const finished = items.find((entry) => !isConvertibleRawMaterial(entry?.item_id));
+  const finished = items.find((entry) => !isConvertibleRawMaterial(entry?.item_id, {...quantityView,enabled:true}));
   return finished?.item_id || items[0]?.item_id || 'beer';
 };
 
-const getPrimaryRawMaterialItemId = (inventory) => {
+const getPrimaryRawMaterialItemId = (inventory, quantityView) => {
   const items = inventory?.inventory_items || [];
-  const raw = items.find((entry) => isConvertibleRawMaterial(entry?.item_id));
+  const raw = items.find((entry) => isConvertibleRawMaterial(entry?.item_id, {...quantityView,enabled:true}));
   return raw?.item_id || '';
 };
 
@@ -120,7 +125,7 @@ const GlobalSimulationView = ({
   const [rows, setRows] = useState([]);
   const [exchangeRows, setExchangeRows] = useState([]);
   const [externalFlowSnapshot, setExternalFlowSnapshot] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(true);const [error,setError]=useState('');const requestSerial=useRef(0);
   const financeRef = useRef(null);
   const exchangeRef = useRef(null);
   const productionRef = useRef(null);
@@ -136,7 +141,7 @@ const GlobalSimulationView = ({
   );
 
   useEffect(() => {
-    loadGlobalData();
+    loadGlobalData();return()=>{requestSerial.current+=1;};
   }, [
     availableDays.join(','),
     dataRoot,
@@ -156,7 +161,7 @@ const GlobalSimulationView = ({
     return () => {
       window.removeEventListener('resize', handleResize);
     };
-  }, [rows, exchangeRows, externalFlowSnapshot, includeUpstreamExternalSupplierMode, includeDownstreamExternalMarketMode, flowMeta]);
+  }, [loading, rows, exchangeRows, externalFlowSnapshot, includeUpstreamExternalSupplierMode, includeDownstreamExternalMarketMode, flowMeta]);
 
   useEffect(() => () => {
     chartRefs.current.forEach((chart) => chart?.dispose());
@@ -164,17 +169,25 @@ const GlobalSimulationView = ({
   }, []);
 
   const loadGlobalData = async () => {
-    setLoading(true);
-
+    const request=++requestSerial.current;setLoading(true);setError('');
+    try{
+    const {source,name}=reviewLocation(dataRoot);const result=await getArtifactView(source,name,'global');
+    if(result.error&&result.status!==404)throw new Error(result.error);
+    if(result.data&& !['available','not_recorded','not_published'].includes(result.data.availability))throw new Error('The global-view projection is invalid or changed. Republish this archive.');
+    const fast=result.data?.availability==='available'?result.data.data:null;
+    const daySet=new Set(availableDays),companySet=new Set(flowMeta.companies);
     const companyRows = [];
-    for (const day of availableDays) {
+    if(fast)companyRows.push(...fast.rows.filter(row=>daySet.has(row.day)&&companySet.has(row.company)));
+    else for (const day of availableDays) {
+      if(request!==requestSerial.current)return;
       const dayRows = await Promise.all(flowMeta.companies.map((company) => readCompanyDay(company, day, dataRoot)));
       companyRows.push(...dayRows);
     }
 
     const exchanges = [];
     for (const day of availableDays) {
-      const data = await safeFetchJson(buildDataUrl(dataRoot, `public/exchange/day${day}/exchange.json`));
+      if(request!==requestSerial.current)return;
+      const data=fast?fast.exchanges.find(row=>row.day===day)?.data:await safeFetchJson(buildDataUrl(dataRoot, `public/exchange/day${day}/exchange.json`));
       const dayExchanges = {};
       Object.entries(data?.data?.exchanges || {}).forEach(([exchangeId, exchange]) => {
         const ordersList = exchange.orders?.list || [];
@@ -201,10 +214,12 @@ const GlobalSimulationView = ({
       salesState: latestBottomRow?.sales || {},
     });
 
+    if(request!==requestSerial.current)return;
     setRows(companyRows);
     setExchangeRows(exchanges);
     setExternalFlowSnapshot(externalFlows);
-    setLoading(false);
+    }catch(error){if(request===requestSerial.current)setError(error.message);}
+    finally{if(request===requestSerial.current)setLoading(false);}
   };
 
   const resetCharts = () => {
@@ -213,7 +228,7 @@ const GlobalSimulationView = ({
   };
 
   const renderCharts = () => {
-    if (rows.length === 0 || exchangeRows.length === 0) {
+    if (loading||!financeRef.current||!exchangeRef.current||!sankeyRef.current||rows.length === 0 || exchangeRows.length === 0) {
       return;
     }
 
@@ -230,11 +245,11 @@ const GlobalSimulationView = ({
     const chart = echarts.init(financeRef.current);
     chartRefs.current.push(chart);
 
-    chart.setOption({
+    setReviewChart(chart, {
       tooltip: { trigger: 'axis' },
       legend: { type: 'scroll', bottom: 0 },
       grid: { left: 44, right: 20, top: 24, bottom: 54 },
-      xAxis: { type: 'category', data: availableDays.map((day) => `Turn ${day}`) },
+      xAxis: { type: 'category', data: availableDays.map((day) => `Round ${day}`) },
       yAxis: { type: 'value' },
       series: flowMeta.companies.map((company) => ({
         name: `${flowMeta.companyNameMap[company] || company} Cash`,
@@ -249,11 +264,11 @@ const GlobalSimulationView = ({
     const chart = echarts.init(exchangeRef.current);
     chartRefs.current.push(chart);
 
-    chart.setOption({
+    setReviewChart(chart, {
       tooltip: { trigger: 'axis' },
       legend: { type: 'scroll', bottom: 0 },
       grid: { left: 44, right: 20, top: 24, bottom: 54 },
-      xAxis: { type: 'category', data: availableDays.map((day) => `Turn ${day}`) },
+      xAxis: { type: 'category', data: availableDays.map((day) => `Round ${day}`) },
       yAxis: { type: 'value', name: getQuantityAxisLabel('Order Quantity', quantityView) },
       series: [
         ...flowMeta.exchangeEntries.flatMap(({ exchangeId, label }) => [
@@ -293,14 +308,14 @@ const GlobalSimulationView = ({
 
     const productionRows = availableDays.map((day) => rows.find((row) => row.company === flowMeta.productionNodeId && row.day === day));
     const latestProductionInventory = latestCompanyRows.find((row) => row.company === flowMeta.productionNodeId)?.inventory || {};
-    const outputItemId = getPrimaryFinishedGoodItemId(latestProductionInventory);
-    const rawItemId = getPrimaryRawMaterialItemId(latestProductionInventory);
+    const outputItemId = getPrimaryFinishedGoodItemId(latestProductionInventory, quantityView);
+    const rawItemId = getPrimaryRawMaterialItemId(latestProductionInventory, quantityView);
 
-    chart.setOption({
+    setReviewChart(chart, {
       tooltip: { trigger: 'axis' },
       legend: { bottom: 0 },
       grid: { left: 44, right: 20, top: 24, bottom: 54 },
-      xAxis: { type: 'category', data: availableDays.map((day) => `Turn ${day}`) },
+      xAxis: { type: 'category', data: availableDays.map((day) => `Round ${day}`) },
       yAxis: { type: 'value' },
       series: [
         {
@@ -399,7 +414,7 @@ const GlobalSimulationView = ({
       const proposalCount = latestExchanges.reduce((sum, exchange) => (
         sum + Number(exchange.proposals || 0)
       ), 0);
-      chart.setOption({
+      setReviewChart(chart, {
         title: {
           text: 'No Confirmed Order Flow',
           subtext: proposalCount > 0
@@ -416,7 +431,7 @@ const GlobalSimulationView = ({
     }
     const nodeNames = [...new Set(links.flatMap((link) => [link.source, link.target]))];
 
-    chart.setOption({
+    setReviewChart(chart, {
       tooltip: {
         trigger: 'item',
         formatter: (params) => {
@@ -448,8 +463,8 @@ const GlobalSimulationView = ({
   const productionRow = latestCompanyRows.find((row) => row.company === flowMeta.productionNodeId);
   const downstreamExchange = latestExchangeRow?.exchanges?.[flowMeta.exchangeEntries[flowMeta.exchangeEntries.length - 1]?.exchangeId];
   const productionInventory = productionRow?.inventory || {};
-  const outputItemId = getPrimaryFinishedGoodItemId(productionInventory);
-  const rawItemId = getPrimaryRawMaterialItemId(productionInventory);
+  const outputItemId = getPrimaryFinishedGoodItemId(productionInventory, quantityView);
+  const rawItemId = getPrimaryRawMaterialItemId(productionInventory, quantityView);
   const productionOutputInventory = flowMeta.productionNodeId
     ? convertQuantityByItem(getInventoryQuantity(productionInventory, outputItemId), outputItemId, quantityView)
     : 0;
@@ -457,8 +472,9 @@ const GlobalSimulationView = ({
     ? convertQuantityByItem(getInventoryQuantity(productionInventory, rawItemId), rawItemId, quantityView)
     : 0;
 
+  if(error)return <section className="view-error" role="alert"><h3>Global review unavailable</h3><p>{error}</p><button onClick={()=>{clearReadCache();loadGlobalData();}}>Retry global review</button></section>;
   if (loading) {
-    return <div className="loading">Loading global review data...</div>;
+    return <LoadingState label="Loading global review data…" variant="chart"/>;
   }
 
   return (
@@ -473,7 +489,7 @@ const GlobalSimulationView = ({
           <strong>{formatMoney(bottomRow?.finance.cash)}</strong>
         </div>
         <div className="global-kpi-card">
-          <span>Downstream Cumulative Orders</span>
+          <span>Downstream Ordered Quantity</span>
           <strong>{formatNumber(downstreamExchange?.orderQuantity || 0)}</strong>
         </div>
         {flowMeta.productionNodeId ? (
@@ -482,10 +498,10 @@ const GlobalSimulationView = ({
               <span>{flowMeta.productionNodeName} {getDisplayItemLabel(outputItemId, quantityView)} Inventory</span>
               <strong>{formatNumber(productionOutputInventory)}</strong>
             </div>
-            <div className="global-kpi-card warning">
+            {rawItemId && <div className="global-kpi-card warning">
               <span>{flowMeta.productionNodeName} {getDisplayItemLabel(rawItemId || 'raw', quantityView)} Inventory</span>
               <strong>{formatNumber(productionRawInventory)}</strong>
-            </div>
+            </div>}
           </>
         ) : (
           <div className="global-kpi-card">
@@ -511,8 +527,8 @@ const GlobalSimulationView = ({
                 ? `Exchange and External Order Trends (Raw Materials as ${quantityView.productId} Equivalents)`
                 : 'Exchange and External Order Trends')
               : (quantityView?.enabled
-                ? `Exchange Orders and Proposal Backlog (Raw Materials as ${quantityView.productId} Equivalents)`
-                : 'Exchange Orders and Proposal Backlog')}
+                ? `Exchange Order Quantities and Proposal Counts (Raw Materials as ${quantityView.productId} Equivalents)`
+                : 'Exchange Order Quantities and Proposal Counts')}
           </div>
           <div className="global-chart" ref={exchangeRef} />
         </div>

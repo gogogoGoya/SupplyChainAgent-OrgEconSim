@@ -33,16 +33,15 @@ from coordination import EnterpriseCommunicationCoordinator
 from config.environment_config import EnvironmentConfig
 from config.simulation_preset_config import get_runtime_injection_config
 from config.integration_profiles import resolve_integration_profiles
+from agent.fd_experiment_runtime import read_policy, write_neutral_analysis
+from core.model_failure import gather_model_tasks
 
 # ============================================================
-# single-enterpriseRun-time
+
 # ============================================================
 
 class EnterpriseRuntime:
-    """
-    single-enterpriseRun-time
-    It's for your existing Enterprise CEO, but it's only for "the family."
-        """
+    '\n    single-enterpriseRun-time\n    It\'s for your existing Enterprise CEO, but it\'s only for "the family."\n        '
 
     def __init__(
         self,
@@ -65,7 +64,6 @@ class EnterpriseRuntime:
         self.anthropic_base_url = (
             anthropic_base_url or EnvironmentConfig.LOCAL_AGENT_GATEWAY_BASE_URL
         )
-        self._validate_agent_gateway_config()
         
         # parameter Co-control semaphore
         self.department_semaphore = asyncio.Semaphore(max_department_concurrency)
@@ -81,6 +79,20 @@ class EnterpriseRuntime:
             self.enterprise_spec,
             workspace_dir=self.workspace_dir,
         )
+        # A fully scripted controller has no model dependency. Partial scripted
+        # policies still require the gateway for their remaining model decisions.
+        scripted_policy = get_runtime_injection_config().get("scripted_rule_policy") or {}
+        scripted_departments = (scripted_policy.get("departments") or {}).get("apply_to_departments") or ["all"]
+        fully_scripted = (
+            bool(scripted_policy.get("enabled"))
+            and bool((scripted_policy.get("analyst") or {}).get("enabled", True))
+            and all(not dept.enabled or dept.dept_id == "finance"
+                    or "all" in scripted_departments or dept.dept_id in scripted_departments
+                    for dept in self.enterprise_spec.departments)
+        )
+        if not fully_scripted:
+            self._validate_agent_gateway_config()
+
 
     @staticmethod
     def _canonical_url(value: str) -> str:
@@ -186,6 +198,8 @@ class EnterpriseRuntime:
         )
 
     def _merge_department_communications(self, round_id: int) -> Optional[Dict[str, Any]]:
+        if read_policy(self._workspace_root(), round_id).get("condition") == "no_shared_coordination":
+            return None
         profile = self._get_coordination_profile()
         validation_mode = str(
             profile.get("communication_validation") or "off"
@@ -222,6 +236,8 @@ class EnterpriseRuntime:
         return coordinator.merge_round(round_id)
 
     def _should_run_analyst(self, round_id: int) -> bool:
+        if read_policy(self._workspace_root(), round_id).get("condition") == "no_analyst":
+            return False
         if self._single_enterprise_case_enabled():
             return True
         policy = self._get_analyst_policy()
@@ -289,7 +305,7 @@ class EnterpriseRuntime:
         return _callback
         
     # ----------------------------
-    # Prompt / Options Construct
+
     # ----------------------------
 
     def build_system_prompt(self, role: str) -> str:
@@ -331,7 +347,7 @@ Requirements:
         return options
 
     # ----------------------------
-    # Parallel
+
     # ----------------------------
 
     async def handle_department_action(self, round_id: int) -> List[dict]:
@@ -347,27 +363,41 @@ Requirements:
             for dept in enabled_departments
         ]
 
-        results = await asyncio.gather(*tasks)
+        results = await gather_model_tasks(*tasks)
         self._merge_department_communications(round_id)
         
-        # Gather all messages
+
         all_dept_messages = []
         for result in results:
-            if result:  # Make sure it's not empty.
+            if result:
                 all_dept_messages.extend(result)
         
         return all_dept_messages
 
     # ----------------------------
-    # parameter First half workflow
+
     # ----------------------------
 
     async def run_workflow(self, round_id: int) -> List[dict]:
+        firm_runner = self.firm_architecture_runner()
+        if firm_runner is not None:
+            messages = await firm_runner.prepare(round_id, "decision")
+            if firm_runner.policy.get("dispatch_protocol") == "enterprise_inline_v2":
+                await firm_runner.dispatch(round_id, "decision")
+            return messages
         messages: List[dict] = []
 
         analyst_ran = False
+        fd_policy = read_policy(self._workspace_root(), round_id)
         scripted_enabled = self.scripted_rule_runner.enabled()
-        if scripted_enabled:
+        if fd_policy.get("condition") == "no_analyst":
+            write_neutral_analysis(
+                self._workspace_root() / "enterprises" / self.enterprise_spec.enterprise_name,
+                self.enterprise_spec.enterprise_name, round_id,
+                [d.dept_id for d in self.enterprise_spec.departments if d.enabled],
+            )
+            analyst_ran = True  # The neutral interface is ready; never call a fallback Analyst.
+        elif scripted_enabled:
             messages.extend(self.scripted_rule_runner.write_analysis(round_id))
             analyst_ran = True
         elif self._should_run_analyst(round_id):
@@ -380,6 +410,7 @@ Requirements:
             and not scripted_enabled
             and self.skill_runner.cobweb_profit_objective_enabled()
         )
+        strict_cobweb_c3_analysis = strict_cobweb_c3_analysis or bool(fd_policy)
         analysis_ready = MultiTenantUtils.ensure_enterprise_analysis_file(
             self.enterprise_spec.enterprise_name,
             round_id=round_id,
@@ -394,13 +425,15 @@ Requirements:
             analysis_ready = MultiTenantUtils.ensure_enterprise_analysis_file(
                 self.enterprise_spec.enterprise_name,
                 round_id=round_id,
+                require_round_id=round_id if fd_policy else None,
+                allow_archive_fallback=not bool(fd_policy),
             )
         if not analysis_ready and not analyst_ran:
             analyst_messages = await self.skill_runner.run_analyst(round_id)
             messages.extend(analyst_messages)
             strict_cobweb_c3_analysis = bool(
                 self.skill_runner.cobweb_profit_objective_enabled()
-            )
+            ) or bool(fd_policy)
             analysis_ready = MultiTenantUtils.ensure_enterprise_analysis_file(
                 self.enterprise_spec.enterprise_name,
                 round_id=round_id,
@@ -414,12 +447,23 @@ Requirements:
                 f"analysis.json unavailable for {self.enterprise_spec.enterprise_name} at round {round_id}"
             )
 
+        if fd_policy:
+            analysis_file = self._workspace_root() / "enterprises" / self.enterprise_spec.enterprise_name / "analysis.json"
+            audit_path = analysis_file.parent / "fd_audit" / f"day{round_id}" / "analysis_provenance.json"
+            payload = MultiTenantUtils._read_json_if_exists(analysis_file, {})
+            MultiTenantUtils._write_json(audit_path, {
+                "condition": fd_policy["condition"], "requested_round": round_id,
+                "analysis_round": payload.get("round_id"),
+                "source": "neutral_interface" if fd_policy["condition"] == "no_analyst" else "scripted" if scripted_enabled else "model",
+                "archive_fallback_allowed": False,
+            })
+
         MultiTenantUtils.handle_enterprises_observations(round_id = round_id, enterprise_name = self.enterprise_spec.enterprise_name)
 
         dept_messages = await self.handle_department_action(round_id)
         messages.extend(dept_messages)
         
-        # Save all model messages to specified directory
+
         MultiTenantUtils.save_model_messages(
             enterprise_name=self.enterprise_spec.enterprise_name,
             round_id=round_id,
@@ -433,14 +477,28 @@ Requirements:
         round_id: int,
         observation_already_refreshed: bool = False,
     ) -> List[dict]:
+        firm_runner = self.firm_architecture_runner()
+        if firm_runner is not None:
+            messages = await firm_runner.prepare(round_id, "trade")
+            if firm_runner.policy.get("dispatch_protocol") == "enterprise_inline_v2":
+                await firm_runner.dispatch(round_id, "trade")
+            return messages
         enabled_departments = [d for d in self.enterprise_spec.departments if d.enabled and d.need_trade]
         if not enabled_departments:
             return []
 
-        MultiTenantUtils.ensure_enterprise_analysis_file(
+        fd_policy = read_policy(self._workspace_root(), round_id)
+        analysis_ready = MultiTenantUtils.ensure_enterprise_analysis_file(
             self.enterprise_spec.enterprise_name,
             round_id=round_id,
+            require_round_id=round_id if fd_policy else None,
+            allow_archive_fallback=not bool(fd_policy),
         )
+        if fd_policy and not analysis_ready:
+            raise FileNotFoundError(
+                f"FD trade requires current analysis.json for {self.enterprise_spec.enterprise_name} "
+                f"at round {round_id}; archive fallback is disabled"
+            )
         if not observation_already_refreshed:
             MultiTenantUtils.save_enterprise_observations(self.enterprise_spec.enterprise_name)
         MultiTenantUtils.handle_enterprises_observations(round_id = round_id, enterprise_name = self.enterprise_spec.enterprise_name)
@@ -454,7 +512,7 @@ Requirements:
             asyncio.create_task(run_trade_with_semaphore(dept, round_id))
             for dept in enabled_departments
         ]
-        results = await asyncio.gather(*tasks)
+        results = await gather_model_tasks(*tasks)
         # Trade preparation refreshes blackboard.json, so restore the optional
         # enterprise-private coordination layer on the final snapshot.
         self._merge_department_communications(round_id)
@@ -464,3 +522,21 @@ Requirements:
                 all_trade_messages.extend(result)
         return all_trade_messages
         
+    def firm_architecture_runner(self):
+        from config.firm_architecture_experiment import policy_from_config, VERSION, FD_ABLATION_VERSION
+        meta = MultiTenantUtils._read_json_if_exists(self._workspace_root() / "run_meta.json", {})
+        policy = policy_from_config(meta.get("scenario_config") or {})
+        if not policy:
+            return None
+        if policy.get("architecture") == "centralized" and policy.get("version") not in {VERSION, FD_ABLATION_VERSION}:
+            raise ValueError('This SA job snapshot uses an older operating regime. Create a new SA job from the scenario card; historical archives remain unchanged.')
+        if not getattr(self, "_firm_decision_runner", None):
+            from agent.firm_decision_runner import FirmDecisionRunner
+            self._firm_decision_runner = FirmDecisionRunner(self, policy)
+        return self._firm_decision_runner
+
+    async def dispatch_firm_phase(self, round_id, phase):
+        runner = self.firm_architecture_runner()
+        if runner is not None:
+            await runner.dispatch(round_id, phase)
+

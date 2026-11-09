@@ -1,3 +1,4 @@
+import LoadingState from './LoadingState';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   createOperationsJob,
@@ -9,16 +10,23 @@ import {
   resumeArtifactRun,
   runOperationsJob,
   stopOperationsJob,
+  listOperationsBatches,
+  createOperationsBatch,
+  controlOperationsBatch,
+  getOperationsAccess,
+  setOperatorToken,
+  reconcileOperationsJobs,
 } from '../utils/operationsApi';
 import { getActionDisplayName } from '../utils/actionLabels';
 
 const STATUS_LABELS = {
-  queued: 'Queued',
-  running: 'Running',
-  stop_requested: 'Stop Requested',
-  completed: 'Completed',
-  failed: 'Failed',
-  stopped: 'Stopped',
+  batch_pending: "Batch pending",
+  queued: "Queued",
+  running: "Running",
+  stop_requested: "Stop Requested",
+  completed: "Completed",
+  failed: "Failed",
+  stopped: "Stopped",
 };
 
 const ACTIVE_STATUSES = new Set(['queued', 'running', 'stop_requested']);
@@ -37,44 +45,56 @@ const CONTROL_PRESETS = {
   },
 };
 const EXPERIMENT_GROUPS = {
+  NA: { id: 'NA', label: 'NA', title: "No enterprise diagnosis", fullLabel: "NA: no Analyst",
+    description: "Retain departments and shared coordination; replace dynamic diagnosis with a neutral interface.", preset: 'agent' },
+  NC: { id: 'NC', label: 'NC', title: "No shared coordination", fullLabel: "NC: no shared coordination",
+    description: "Retain Analyst and authorized department facts; remove shared projections and department messages.", preset: 'agent' },
+  MA: {
+    id: 'MA', label: 'MA', title: "Legacy organizational protocol", fullLabel: "MA: legacy organizational protocol (optional)",
+    description: "Legacy economic MA uses a different regime and is not the current C3-matched SA control.", preset: 'agent',
+  },
+  SA: {
+    id: 'SA', label: 'SA', title: "Single enterprise Agent", fullLabel: "SA: single enterprise LLM",
+    description: "One model task diagnoses and operates each enterprise; economic SA inherits C3 and FD variants retain shared operating conditions.", preset: 'agent',
+  },
   C1: {
     id: 'C1',
     label: 'C1',
-    title: 'Rule Script',
-    fullLabel: 'C1 Rule-Based Reference',
-    description: 'Fixed rules validate scenario and environment mechanisms.',
+    title: "Rule Script",
+    fullLabel: "C1 Rule-Based Reference",
+    description: "Fixed rules validate scenario and environment mechanisms.",
     preset: 'scripted',
   },
   C2: {
     id: 'C2',
     label: 'C2',
-    title: 'Agent',
-    fullLabel: 'C2 Mechanism-Constrained Agent',
-    description: 'Agents make decisions under scenario-specific mechanism constraints.',
+    title: "Agent",
+    fullLabel: "C2 Mechanism-Constrained Agent",
+    description: "Agents make decisions under scenario-specific mechanism constraints.",
     preset: 'agent',
   },
   C3: {
     id: 'C3',
     label: 'C3',
-    title: 'Profit Objective',
-    fullLabel: 'C3 Objective-Constrained Agent',
-    description: 'Agents balance profit, cash, service, and risk objectives.',
+    title: "Profit Objective",
+    fullLabel: "C3 Objective-Constrained Agent",
+    description: "Agents balance profit, cash, service, and risk objectives.",
     preset: 'agent',
   },
   S0: {
     id: 'S0',
     label: 'S0',
-    title: 'Enterprise Capability Validation',
-    fullLabel: 'S0 Enterprise Decision Validation',
-    description: 'Targeted enterprise operating cases.',
+    title: "Enterprise Capability Validation",
+    fullLabel: "S0 Enterprise Decision Validation",
+    description: "Targeted enterprise operating cases.",
     preset: 'agent',
   },
   E1: {
     id: 'E1',
     label: 'E1',
-    title: 'Continuous Evolution',
-    fullLabel: 'E1 Long-Horizon Continuous Evolution',
-    description: 'A four-tier supply chain adapts to phased changes in external costs, logistics, and demand.',
+    title: "Continuous Evolution",
+    fullLabel: "E1 Long-Horizon Continuous Evolution",
+    description: "A four-tier supply chain adapts to phased changes in external costs, logistics, and demand.",
     preset: 'agent',
   },
 };
@@ -82,7 +102,7 @@ const MULTI_SCENARIO_GROUPS = [
   {
     id: 'evolution',
     label: 'Continuous Evolution',
-    summary: 'A 200-turn four-tier supply chain run that tests responses to phased external changes.',
+    summary: 'A 200-round four-tier supply chain run that tests responses to phased external changes.',
   },
   {
     id: 'bullwhip',
@@ -107,11 +127,11 @@ const MULTI_SCENARIO_GROUPS = [
 ];
 
 const SINGLE_CASE_SUMMARIES = {
-  single_case_01_order_selection: 'Tests whether sales develops markets and selects a profitable, fulfillable order portfolio under limited acceptance capacity.',
-  single_case_02_material_shortage: 'Tests whether procurement selects suitable suppliers, quantities, and logistics under a raw-material shortage.',
-  single_case_03_capacity_bottleneck: 'Tests whether production identifies and resolves a capacity bottleneck.',
-  single_case_04_staff_shortage: 'Tests whether human resources restores staffing in critical departments.',
-  single_case_05_cash_pressure: 'Tests whether the enterprise protects liquidity and prioritizes cash recovery under financial pressure.',
+  single_case_01_order_selection: "Tests whether sales develops markets and selects a profitable, fulfillable order portfolio under limited acceptance capacity.",
+  single_case_02_material_shortage: "Tests whether procurement selects suitable suppliers, quantities, and logistics under a raw-material shortage.",
+  single_case_03_capacity_bottleneck: "Tests whether production identifies and resolves a capacity bottleneck.",
+  single_case_04_staff_shortage: "No production workers; observe staffing, production and delivery recovery.",
+  single_case_05_cash_pressure: "Compare fulfillment, inventory and cash allocation following operating investment.",
 };
 
 const formatValue = (value) => {
@@ -283,9 +303,7 @@ const getScenarioLabel = (scenario) => (
 );
 
 const getSingleCaseSummary = (scenario) => {
-  const scenarioId = String(getScenarioKey(scenario) || '')
-    .replace(/_scripted$/i, '')
-    .replace(/_profit_objective$/i, '');
+  const scenarioId = getScenarioBaseKey(scenario);
   return SINGLE_CASE_SUMMARIES[scenarioId] || '';
 };
 
@@ -332,11 +350,24 @@ const getExperimentGroupMeta = (scenarioOrGroup) => {
   const group = typeof scenarioOrGroup === 'string'
     ? String(scenarioOrGroup).toUpperCase()
     : getExperimentGroup(scenarioOrGroup);
+  if (group === 'MA' && typeof scenarioOrGroup !== 'string'
+    && getExperimentDesign(scenarioOrGroup).experiment_family === 'fd_matched_ablation') {
+    return { ...EXPERIMENT_GROUPS.MA, title: "Full organization", fullLabel: "Full / MA organizational control",
+      description: "Independent Analyst and departments share economic/execution rules with NA, NC and SA." };
+  }
+  if (group === 'MA' && typeof scenarioOrGroup !== 'string'
+    && getExperimentDesign(scenarioOrGroup).comparison_target === 'firm_ablation_fd4_sa') {
+    return {
+      ...EXPERIMENT_GROUPS.MA,
+      title: "FD4 organizational enterprise", fullLabel: "MA: paired FD4 control",
+      description: "Independent Analyst and departments use the same FD4 regime, phase dispatch and tool-evidence rules as SA.",
+    };
+  }
   return EXPERIMENT_GROUPS[group] || {
     id: group || '-',
     label: group || '-',
-    title: 'Unmarked',
-    fullLabel: group || 'Not indicated experiment Group',
+    title: "Unspecified",
+    fullLabel: group || "Experiment group not specified",
     description: '',
     preset: 'agent',
   };
@@ -354,15 +385,15 @@ const getFormalExperimentConfig = (scenario) => (
 const getFormalExperimentRoleLabel = (scenario) => {
   const formalConfig = getFormalExperimentConfig(scenario);
   if (!formalConfig.ready_for_formal_run) {
-    return 'Explore Configuration';
+    return 'Exploratory configuration';
   }
   if (formalConfig.experiment_role === 'mechanism_calibration') {
-    return 'Validation of official parameters';
+    return 'Mechanism calibration';
   }
   if (formalConfig.experiment_role === 'main_comparison') {
-    return 'Official master comparison';
+    return 'Primary comparison';
   }
-  return 'Official experiment';
+  return 'Primary experiment';
 };
 
 const getLongRunExperimentPolicy = (scenario) => (
@@ -378,7 +409,7 @@ const formatEvaluationWindow = (formalConfig) => {
   if (window.start_round === undefined || window.end_round_inclusive === undefined) {
     return '-';
   }
-  return `Turn ${window.start_round}-Turn ${window.end_round_inclusive}`;
+  return `Round ${window.start_round}-Round ${window.end_round_inclusive}`;
 };
 
 const formatObjectiveWeights = (objectiveWeights) => {
@@ -422,7 +453,7 @@ const getScenarioVariantForPreset = (selectedScenario, scenarioVariants = [], pr
 };
 
 const getExperimentSortOrder = (scenario) => {
-  const order = { E1: 1, C1: 2, C2: 3, C3: 4, S0: 5 };
+  const order = { E1: 1, C1: 2, C2: 3, C3: 4, S0: 5, MA: 6, NA: 7, NC: 8, SA: 9 };
   return order[getExperimentGroup(scenario)] || 99;
 };
 
@@ -445,6 +476,25 @@ const isScriptedJob = (job) => {
   return String(job?.execution_mode || '').toLowerCase() === 'scripted_subprocess';
 };
 
+const getFdConditionLabel = (job) => {
+  const arm = job?.config_overrides?.runtime_injection?.firm_architecture_experiment?.arm
+    || (job?.tags || []).find((tag) => tag.startsWith('fd-arm:'))?.split(':')[1];
+  if (arm) return { ma: 'Full / MA', na: "NA: no enterprise diagnosis", nc: "NC: no shared coordination", sa: "SA: single enterprise Agent" }[arm] || arm;
+  const architecture = job?.config_overrides?.runtime_injection?.firm_architecture_experiment?.architecture
+    || (job?.tags || []).find((tag) => tag.startsWith('firm-architecture:'))?.split(':')[1];
+  if (architecture) return architecture === 'centralized' ? "SA: single enterprise Agent" : "MA: organizational architecture control";
+  const condition = job?.config_overrides?.runtime_injection?.single_enterprise_case_policy
+    ?.fd_experiment?.condition || (job?.tags || []).find((tag) => tag.startsWith('fd-condition:'))?.split(':')[1];
+  return {
+    full: 'Full-AG',
+    no_analyst: 'w/o Analyst',
+    no_shared_coordination: 'w/o Shared Coordination',
+    rb_revised: 'RB',
+    rb_simple: 'RB-Simple',
+    rb_reference: 'RB reference',
+  }[condition] || '';
+};
+
 const getActiveAgentJob = (jobs) => (
   jobs.find((job) => (
     ACTIVE_STATUSES.has(normalizeJobStatus(job?.status))
@@ -452,8 +502,15 @@ const getActiveAgentJob = (jobs) => (
   )) || null
 );
 
+// Architecture variants belong to their original business scenario's card.
+// Keep the actual scenario_id for configuration, launching and archive identity.
 const getScenarioBaseKey = (scenario) => (
-  String(getScenarioKey(scenario) || '')
+  String(
+    scenario?.config_defaults?.firm_architecture_experiment?.source
+    || getExperimentDesign(scenario).source_scenario_id
+    || getScenarioKey(scenario)
+    || ''
+  )
     .replace(/_scripted$/i, '')
     .replace(/_profit_objective$/i, '')
 );
@@ -546,7 +603,7 @@ const buildMultiScenarioCards = (scenarios) => (
       return null;
     }
     const availableExperimentGroups = Array.from(
-      new Set(allVariants.map(getExperimentGroup).filter((item) => ['E1', 'C1', 'C2', 'C3'].includes(item)))
+      new Set(allVariants.map(getExperimentGroup).filter((item) => ['E1', 'C1', 'C2', 'C3', 'MA', 'SA'].includes(item)))
     );
     return {
       ...primary,
@@ -561,6 +618,27 @@ const buildMultiScenarioCards = (scenarios) => (
     };
   }).filter(Boolean)
 );
+
+const buildSingleScenarioCards = (scenarios) => {
+  const groups = new Map();
+  scenarios.forEach((scenario) => {
+    const baseId = getScenarioBaseKey(scenario);
+    if (!groups.has(baseId)) groups.set(baseId, []);
+    groups.get(baseId).push(scenario);
+  });
+  return Array.from(groups, ([baseId, variants]) => {
+    const primary = variants.find((scenario) => getScenarioKey(scenario) === baseId)
+      || variants.find((scenario) => !isScriptedScenarioVariant(scenario))
+      || variants[0];
+    const allVariants = sortScenarioVariants(variants);
+    return {
+      ...primary,
+      available_experiment_groups: Array.from(new Set(allVariants.map(getExperimentGroup))),
+      scenario_variants: allVariants,
+      all_scenario_variants: allVariants,
+    };
+  });
+};
 
 const getScenarioVariantIds = (scenario) => {
   const variants = scenario?.scenario_variants || [];
@@ -656,7 +734,8 @@ const buildConfigForm = (scenario, scenarioVariants = []) => {
     agentRunSteps: toFormValue(simulation.agent_run_steps),
     serviceTotalSteps: toFormValue(simulation.service_total_steps),
     maxEnterpriseConcurrency: toFormValue(simulation.max_enterprise_concurrency),
-    maxDepartmentConcurrency: toFormValue(simulation.max_department_concurrency),
+    maxDepartmentConcurrency: toFormValue(defaults.fd_experiment_options?.length
+      ? 1 : simulation.max_department_concurrency),
     marketDemandMode: toFormValue(simulation.market_demand_mode),
     hrRecruitThreshold: toFormValue(autoPolicy.hr?.recruit_trigger_threshold),
     hrRecruitRatio: toFormValue(autoPolicy.hr?.recruit_ratio),
@@ -672,6 +751,11 @@ const buildConfigForm = (scenario, scenarioVariants = []) => {
     productionPeerSignalSensitivity: toFormValue(productionPolicy.peer_signal_sensitivity),
     singlePrewarmRounds: toFormValue(singleCasePolicy.prewarm_rounds),
     singleHandoffDay: toFormValue(singleCasePolicy.handoff_day),
+    fdExperimentCondition: defaults.fd_experiment_options?.[0]?.value || 'legacy',
+    firmMaxAttempts: toFormValue(defaults.firm_architecture_experiment?.max_attempts),
+    firmAttemptTimeout: toFormValue(defaults.firm_architecture_experiment?.attempt_timeout_seconds),
+    fdBatchId: '',
+    fdRepeatId: '1',
     singleAcceptOrdersPerRound: toFormValue(singleCaseProfile.accept_orders_per_round),
     singleMarketDevelopmentRounds: toFormListValue(singleCaseProfile.market_development_rounds),
     singleMarketDevelopmentWorkers: toFormValue(singleCaseProfile.market_development_workers),
@@ -748,7 +832,29 @@ const compactObject = (value) => {
   return result;
 };
 
-const buildConfigOverrides = (form, scenario) => compactObject({
+const buildConfigOverrides = (form, scenario) => {
+  const architecture = scenario?.config_defaults?.firm_architecture_experiment;
+  if ((architecture?.architecture === 'centralized' && architecture.baseline_group === 'C3')
+    || /^fd[12345]$/.test(architecture?.family || '')) {
+    // A matched C3 ablation must not silently rewrite inherited disabled-script
+    // settings, costs, auto rules or concurrency via legacy form defaults.
+    return compactObject({
+      experiment_design: architecture?.arm ? {
+        batch_id: form.fdBatchId || undefined,
+        repeat_id: toNumberOrUndefined(form.fdRepeatId),
+      } : undefined,
+      simulation: {
+        agent_run_steps: toNumberOrUndefined(form.agentRunSteps),
+        service_total_steps: toNumberOrUndefined(form.serviceTotalSteps),
+      },
+      runtime_injection: { firm_architecture_experiment: {
+        ...architecture,
+        max_attempts: toNumberOrUndefined(form.firmMaxAttempts),
+        attempt_timeout_seconds: toNumberOrUndefined(form.firmAttemptTimeout),
+      } },
+    });
+  }
+  return compactObject({
   simulation: {
     agent_run_steps: toNumberOrUndefined(form.agentRunSteps),
     service_total_steps: toNumberOrUndefined(form.serviceTotalSteps),
@@ -766,6 +872,11 @@ const buildConfigOverrides = (form, scenario) => compactObject({
     },
   },
   runtime_injection: {
+    firm_architecture_experiment: scenario?.config_defaults?.firm_architecture_experiment?.enabled ? {
+      ...scenario.config_defaults.firm_architecture_experiment,
+      max_attempts: toNumberOrUndefined(form.firmMaxAttempts),
+      attempt_timeout_seconds: toNumberOrUndefined(form.firmAttemptTimeout),
+    } : undefined,
     salary_payment_interval_days: toNumberOrUndefined(form.salaryInterval),
     inventory_cost_daily_settlement_enabled: form.inventoryCostDaily === 'true',
     scripted_rule_policy: {
@@ -833,9 +944,13 @@ const buildConfigOverrides = (form, scenario) => compactObject({
     single_enterprise_case_policy: {
       prewarm_rounds: toNumberOrUndefined(form.singlePrewarmRounds),
       handoff_day: toNumberOrUndefined(form.singleHandoffDay),
+      fd_experiment: scenario?.config_defaults?.fd_experiment_options?.length ? {
+        condition: form.fdExperimentCondition || 'legacy',
+      } : undefined,
     },
   },
-});
+  });
+};
 
 const findCurrentJob = (jobs, currentRunId, currentRunMeta, currentRunSourceLabel) => {
   const runId = getRunId(currentRunMeta, currentRunId);
@@ -856,6 +971,11 @@ const ExperimentOperationsView = ({
   availableRuns = [],
 }) => {
   const [jobs, setJobs] = useState([]);
+  const [access, setAccess] = useState({ mode: 'visitor', can_operate: false });
+  const [tokenInput, setTokenInput] = useState('');
+  const canOperate = access.can_operate === true;
+  const [batches, setBatches] = useState([]);
+  const activeBatch = batches.find((batch) => ['running', 'pause_requested'].includes(batch.status));
   const [scenarios, setScenarios] = useState([]);
   const [backendAvailable, setBackendAvailable] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -880,6 +1000,7 @@ const ExperimentOperationsView = ({
     )) || null,
     [scenarios, createScenarioId]
   );
+  const currentScenarioId = getScenarioId(currentRunMeta);
 
   const visibleScenarios = useMemo(
     () => {
@@ -888,7 +1009,7 @@ const ExperimentOperationsView = ({
       ));
       return scenarioScope === 'multi'
         ? buildMultiScenarioCards(scopedScenarios)
-        : scopedScenarios.filter((scenario) => !isScriptedScenarioVariant(scenario));
+        : buildSingleScenarioCards(scopedScenarios);
     },
     [scenarios, scenarioScope]
   );
@@ -952,10 +1073,14 @@ const ExperimentOperationsView = ({
       setLoading(true);
     }
     try {
-      const [jobResult, scenarioResult] = await Promise.all([
+      const [jobResult, scenarioResult, batchResult, accessResult] = await Promise.all([
         listOperationsJobs({ limit: 100 }),
         listOperationScenarios(),
+        listOperationsBatches(),
+        getOperationsAccess(),
       ]);
+      setAccess(accessResult.available ? accessResult.data : { mode: 'visitor', can_operate: false });
+      if (batchResult.available) setBatches(Array.isArray(batchResult.data) ? batchResult.data : []);
       setBackendAvailable(jobResult.available || scenarioResult.available);
       if (jobResult.available || Array.isArray(jobResult.jobs)) {
         setJobs(jobResult.jobs || []);
@@ -969,7 +1094,7 @@ const ExperimentOperationsView = ({
     } catch (loadError) {
       const message = loadError?.message || String(loadError);
       setBackendAvailable(false);
-      setError(message || 'Operations backend not available');
+      setError(message || "Operations backend not available");
     } finally {
       jobsRefreshInFlightRef.current = false;
       if (!silent) {
@@ -991,11 +1116,11 @@ const ExperimentOperationsView = ({
   }, [toast]);
 
   useEffect(() => {
-    const nextScenarioId = getScenarioId(currentRunMeta);
-    if (nextScenarioId && nextScenarioId !== '-') {
-      setCreateScenarioId(nextScenarioId);
+    // Background run refreshes must not replace an in-progress launch selection.
+    if (!configModalOpen && currentScenarioId && currentScenarioId !== '-') {
+      setCreateScenarioId(currentScenarioId);
     }
-  }, [currentRunMeta]);
+  }, [currentScenarioId, configModalOpen]);
 
   useEffect(() => {
     if (!detailScenario) {
@@ -1008,26 +1133,53 @@ const ExperimentOperationsView = ({
   }, [detailScenario]);
 
   useEffect(() => {
-    if (statusCounts.active <= 0) {
+    if (statusCounts.active <= 0 && !activeBatch) {
       return undefined;
     }
     const timer = window.setInterval(() => {
       loadJobs({ silent: true });
     }, 3500);
     return () => window.clearInterval(timer);
-  }, [statusCounts.active]);
+  }, [statusCounts.active, activeBatch?.batch_id]);
+
+  const unlockOperations = async (event) => {
+    event.preventDefault();
+    setOperatorToken(tokenInput);
+    setTokenInput('');
+    const result = await getOperationsAccess();
+    if (result.available && result.data?.can_operate) {
+      setAccess(result.data);
+      setError('');
+      showToast('success', 'Operator access enabled for this page session.');
+    } else {
+      setOperatorToken('');
+      setAccess(result.data || { mode: 'visitor', can_operate: false });
+      setError('Operator access was not granted. Check the access token and deployment mode.');
+    }
+  };
+
+  const lockOperations = () => {
+    setOperatorToken('');
+    setTokenInput('');
+    setAccess((previous) => ({ ...previous, can_operate: false }));
+    setConfigModalOpen(false);
+  };
 
   const runAction = async (actionKey, action) => {
+    if (!canOperate) {
+      showToast('error', 'Read-only access: request operator access or use your own configured installation.');
+      return null;
+    }
     setSubmittingAction(actionKey);
     setError('');
     setActionMessage('');
     showToast(
       'info',
       actionKey.startsWith('delete-')
-        ? 'Deleting task record...'
+        ? "Deleting task record..."
         : actionKey.startsWith('stop-')
-          ? 'Requesting aborting simulation...'
-          : 'Operation submitted, processing...'
+          ? "Requesting aborting simulation..."
+          : "Operation submitted, processing..."
     );
     let result = null;
     try {
@@ -1038,10 +1190,10 @@ const ExperimentOperationsView = ({
         showToast('error', message);
       } else {
         const message = actionKey.startsWith('delete-')
-          ? 'Job records deleted.'
+          ? "Job records deleted."
           : actionKey.startsWith('stop-')
-            ? 'A stop request has been submitted and will take effect at the next turn boundary.'
-            : 'Operation written to operations job status.';
+            ? "A stop request has been submitted and will take effect at the next turn boundary."
+            : "Operation written to operations job status.";
         setActionMessage(message);
         showToast('success', message);
       }
@@ -1064,7 +1216,7 @@ const ExperimentOperationsView = ({
     if (!jobId) {
       return;
     }
-    showToast('info', `Tasks ${jobId} Created, backstage operation triggered.`);
+    showToast('info', `Job ${jobId} Created, backstage operation triggered.`);
     runOperationsJob(jobId, {
       scenario_id: scenarioId,
       worker_id: 'operations-page-worker',
@@ -1079,7 +1231,7 @@ const ExperimentOperationsView = ({
     }).catch((runError) => {
       const message = runError?.message || String(runError);
       setError(message);
-      showToast('error', message || 'Background execution failed');
+      showToast('error', message || "Background execution failed");
     }).finally(() => {
       loadJobs();
     });
@@ -1092,7 +1244,7 @@ const ExperimentOperationsView = ({
   } = {}) => {
     const scenarioId = getScenarioKey(scenario);
     if (!scenarioId) {
-      const message = 'Select a scenario first.';
+      const message = "Select a scenario first.";
       setError(message);
       showToast('error', message);
       return null;
@@ -1106,7 +1258,7 @@ const ExperimentOperationsView = ({
     const scenarioForm = formOverride || buildPresetConfigForm(scenario, 'agent');
     const plannedSteps = scenarioForm.agentRunSteps === '' ? null : Number(scenarioForm.agentRunSteps);
     if (plannedSteps !== null && (!Number.isFinite(plannedSteps) || plannedSteps < 1)) {
-      const message = 'Planned turns must be empty or at least 1.';
+      const message = "Planned turns must be empty or at least 1.";
       setError(message);
       showToast('error', message);
       return null;
@@ -1118,7 +1270,9 @@ const ExperimentOperationsView = ({
         const created = await createOperationsJob({
           scenario_id: scenarioId,
           planned_total_steps: plannedSteps,
-          tags: ['ui', `preset:${preset}`],
+          tags: ['ui', `preset:${preset}`, ...(scenarioForm.fdExperimentCondition !== 'legacy'
+            && scenarioForm.fdExperimentCondition
+            ? [`fd-condition:${scenarioForm.fdExperimentCondition}`] : [])],
           requested_by: 'operations-page',
           config_overrides: buildConfigOverrides(scenarioForm, scenario),
         });
@@ -1143,7 +1297,7 @@ const ExperimentOperationsView = ({
 
   const handleRunFromModal = async ({ form, preset = 'agent' } = {}) => {
     if (!selectedScenario) {
-      const message = 'Select a scenario first.';
+      const message = "Select a scenario first.";
       setError(message);
       showToast('error', message);
       return;
@@ -1164,6 +1318,21 @@ const ExperimentOperationsView = ({
       preset,
     });
     setConfigModalOpen(false);
+  };
+
+  const handleBatchFromModal = async ({ variants, repeats }) => {
+    const result = await runAction('create-batch', () => createOperationsBatch({
+      repeats: Number(repeats), requested_by: 'operations-page',
+      items: variants.map((variant) => ({
+        scenario_id: getScenarioKey(variant), planned_total_steps: 20,
+        tags: ['ui', 'preset:agent'],
+        config_overrides: buildConfigOverrides(buildPresetConfigForm(variant, 'agent'), variant),
+      })),
+    }));
+    if (result?.available && !result.error) {
+      showToast('success', "Batch submitted. The server will launch independent experiments serially; you may close the browser.");
+      setConfigModalOpen(false);
+    }
   };
 
   const handleDeleteJob = async (job) => {
@@ -1242,10 +1411,33 @@ const ExperimentOperationsView = ({
           {toast.message}
         </div>
       )}
+      <section className="platform-access-panel" aria-label="Execution access">
+        {canOperate && <button onClick={()=>runAction('reconcile',reconcileOperationsJobs)}>Reconcile exited workers</button>}
+        <div>
+          <strong>{canOperate ? 'Operator access' : 'Visitor access · read only'}</strong>
+          <p>{access.message || 'Browse existing experiment records. Simulation controls are locked.'}</p>
+          {!canOperate && <p>To run new experiments, use your own installation and model service, or request access from the host.</p>}
+          {access.access_request_url && (
+            <a href={access.access_request_url} target="_blank" rel="noopener noreferrer">Request execution access</a>
+          )}
+        </div>
+        {canOperate ? (
+          <button type="button" onClick={lockOperations}>Lock experiment controls</button>
+        ) : access.execution_enabled && (
+          <form onSubmit={unlockOperations}>
+            <label htmlFor="operator-access-token">Operator access token</label>
+            <input id="operator-access-token" type="password" autoComplete="off"
+              value={tokenInput} onChange={(event) => setTokenInput(event.target.value)} />
+            <button type="submit" disabled={!tokenInput.trim()}>Unlock controls</button>
+            <small>Use an access token from this host, not a model API key. It is cleared when the page reloads.</small>
+          </form>
+        )}
+      </section>
       <section className="experiment-ops-command-bar">
+        {loading&&<LoadingState label="Loading experiment catalog and run status…" variant="compact"/>}
         <div className="experiment-ops-command-main">
           <div className={`experiment-ops-connection ${backendAvailable ? 'ready' : 'offline'}`}>
-            <strong>{backendAvailable ? 'Service connected' : 'Service not connected'}</strong>
+            <strong>{backendAvailable ? "Service connected" : "Service not connected"}</strong>
             <span>{lastLoadedAt || '-'}</span>
           </div>
           <div className="experiment-ops-kpis compact">
@@ -1255,7 +1447,7 @@ const ExperimentOperationsView = ({
             <MetricCard label="Failed / Stopped" value={statusCounts.failed + statusCounts.stopped} detail="failed / stopped" tone="danger" />
           </div>
           <button type="button" className="experiment-ops-refresh" onClick={loadJobs}>
-            {loading ? 'Refreshing...' : 'Refresh Status'}
+            {loading ? "Refreshing..." : "Refresh Status"}
           </button>
         </div>
 
@@ -1263,16 +1455,17 @@ const ExperimentOperationsView = ({
           <div className="experiment-ops-bottom-panel">
             <strong>Task Status</strong>
             {!backendAvailable ? (
-              <span>{error || 'Start the system service first.'}</span>
+              <span>{error || "Start the system service first."}</span>
             ) : jobs.length === 0 ? (
-              <span>No jobs available.</span>
+              <span>No job</span>
             ) : (
               <div className="experiment-ops-mini-table">
                 {jobs.slice(0, 8).map((job) => {
                   const status = normalizeJobStatus(job.status);
                   return (
                     <div key={job.job_id} className={currentJob?.job_id === job.job_id ? 'linked' : ''}>
-                      <span>{formatValue(job.scenario_id)}</span>
+                      <span>{formatValue(job.scenario_id)}{getFdConditionLabel(job)
+                        ? ` · ${getFdConditionLabel(job)}` : ''}</span>
                       <strong className={`experiment-ops-status ${status}`}>
                         {STATUS_LABELS[job.status] || formatValue(job.status)}
                       </strong>
@@ -1293,7 +1486,7 @@ const ExperimentOperationsView = ({
                   </span>
                 ))
               ) : (
-                <span>No run results available</span>
+                <span>No archived run results are available</span>
               )}
             </div>
           </div>
@@ -1348,10 +1541,10 @@ const ExperimentOperationsView = ({
               const hasScenarioActivity = scenarioJobs.length > 0 || scenarioRuns.length > 0;
               const scenarioStatusLabel = scenarioJob
                 ? (STATUS_LABELS[scenarioStatus] || scenarioStatus)
-                : 'No job';
+                : "No job";
               const scenarioRunLabel = scenarioJob
                 ? formatShortRunId(scenarioJob.run_id || scenarioJob.job_id)
-                : 'Not started';
+                : "Not started";
               const scenarioTimeLabel = scenarioJob
                 ? formatCompactTime(getJobActivityTime(scenarioJob))
                 : '-';
@@ -1363,7 +1556,7 @@ const ExperimentOperationsView = ({
                       <ExperimentGroupBadge group={experimentMeta.id} />
                     </div>
                     <strong>{getScenarioLabel(scenario)}</strong>
-                    {scenarioScope === 'multi' && (
+                    {availableGroups.length > 1 && (
                       <div className="experiment-group-chip-row">
                         {availableGroups.map((group) => (
                           <ExperimentGroupBadge key={group} group={group} compact />
@@ -1378,16 +1571,14 @@ const ExperimentOperationsView = ({
                     <small>{scenarioTimeLabel}</small>
                   </div>
                   <div className="experiment-scenario-metrics">
-                    <InfoRow label={scenarioScope === 'multi' ? 'Default Configuration' : 'Scenario ID'} value={scenarioId} />
-                    <InfoRow label="Experiment Group" value={getExperimentGroupLabel(scenario)} />
+                    <InfoRow label={scenarioScope === 'multi' ? "Default Configuration" : "Scenario ID"} value={scenarioId} />
+                    <InfoRow label="Experiment group" value={getExperimentGroupLabel(scenario)} />
                     <InfoRow label="Turns" value={scenario?.config_defaults?.simulation?.agent_run_steps} />
                     <InfoRow label="Mode" value={scenario?.config_defaults?.simulation?.market_demand_mode} />
                     <InfoRow label="Demand Product" value={getScenarioDemandProduct(scenario)} />
                     <InfoRow
-                      label={scenarioScope === 'multi' ? 'Optional Configuration' : 'Recent missions'}
-                      value={scenarioScope === 'multi'
-                        ? `${scenario.scenario_variants?.length || 1} configurations`
-                        : scenarioRunLabel}
+                      label="Optional Configuration"
+                      value={`${scenario.scenario_variants?.length || 1} configurations`}
                     />
                   </div>
                   <div className="experiment-scenario-actions">
@@ -1397,7 +1588,7 @@ const ExperimentOperationsView = ({
                       disabled={!backendAvailable || isBusy}
                       onClick={() => handleOpenConfig(scenario)}
                     >
-                      Configure Startup
+                      {canOperate ? 'Configure Startup' : 'View Configuration'}
                     </button>
                     <button
                       type="button"
@@ -1419,11 +1610,44 @@ const ExperimentOperationsView = ({
         </div>
       </section>
 
+      {batches.length > 0 && (
+        <section className="experiment-fd-batches">
+          <strong>FD automatic batches</strong>
+          {batches.slice(0, 20).map((batch) => (
+            <details key={batch.batch_id}>
+              <summary>
+                {batch.family?.toUpperCase()} · {batch.batch_id} · Completed {batch.items.filter((item) => item.status === 'completed').length}/{batch.items.length} ·
+                {({ running: "Running automatically", pause_requested: "Pause after current item", paused: "Paused",
+                  completed: "All completed", finished_with_failures: "Finished with failed items" })[batch.status] || batch.status}
+              </summary>
+              <p className="experiment-ops-note">{batch.message}</p>
+              {['running', 'pause_requested'].includes(batch.status) && (
+                <button disabled={!canOperate || Boolean(submittingAction) || batch.status === 'pause_requested'}
+                  onClick={() => runAction(`pause-${batch.batch_id}`, () => controlOperationsBatch(batch.batch_id, 'pause'))}>Pause after current item</button>
+              )}
+              {batch.status === 'paused' && (
+                <button disabled={!canOperate || Boolean(submittingAction) || Boolean(activeBatch)}
+                  onClick={() => runAction(`resume-${batch.batch_id}`, () => controlOperationsBatch(batch.batch_id, 'resume'))}>Resume pending items (skip failures)</button>
+              )}
+              <ol>{batch.items.map((item) => (
+                <li key={item.job_id}>Repeat {item.repeat_id} · {item.scenario_id} ·
+                  {({ pending: "Pending", running: "Running", completed: "Completed", failed: "Failed", stopped: "Stopped" })[item.status]} ·
+                  {item.job_id}{item.run_id ? ` / ${item.run_id}` : ''}
+                  {item.status === 'running' && ` · Completed ${item.completed_steps || 0}/${item.planned_total_steps} turns`}
+                  {item.artifact_root && <div>Data directory: {item.artifact_root}</div>}
+                  {item.error && item.status !== 'completed' && <div>{item.error}</div>}
+                </li>
+              ))}</ol>
+            </details>
+          ))}
+        </section>
+      )}
       {configModalOpen && (
         <ConfigModal
           selectedScenario={selectedScenario}
           scenarioVariants={getScenarioVariantsForSelection(scenarios, visibleScenarios, selectedScenario)}
           backendAvailable={backendAvailable}
+          canOperate={canOperate}
           submittingAction={submittingAction}
           onVariantChange={(scenarioId) => {
             const nextScenario = scenarios.find((scenario) => getScenarioKey(scenario) === scenarioId);
@@ -1434,13 +1658,16 @@ const ExperimentOperationsView = ({
           }}
           onNotify={showToast}
           activeAgentJob={activeAgentJob}
+          activeBatch={activeBatch}
           onClose={() => setConfigModalOpen(false)}
           onRun={handleRunFromModal}
+          onBatchRun={handleBatchFromModal}
         />
       )}
       {detailScenario && (
         <RunDetailModal
           scenario={detailScenario}
+          canOperate={canOperate}
           jobs={getJobsForScenarioSelection(jobs, detailScenario)}
           runs={getRunsForScenarioSelection(availableRuns, detailScenario)}
           submittingAction={submittingAction}
@@ -1484,14 +1711,17 @@ const ConfigModal = ({
   selectedScenario,
   scenarioVariants = [],
   backendAvailable,
+  canOperate = false,
   submittingAction,
   onVariantChange,
   onNotify,
   activeAgentJob,
+  activeBatch,
   onClose,
   onRun,
+  onBatchRun,
 }) => {
-  const disabled = !backendAvailable || Boolean(submittingAction);
+  const disabled = !canOperate || !backendAvailable || Boolean(submittingAction);
   const isSingle = selectedScenario?.simulation_profile === 'single_enterprise';
   const scenarioVariantKey = scenarioVariants.map(getScenarioKey).filter(Boolean).join('|');
   const recommendedPreset = getRecommendedPresetForScenario(selectedScenario);
@@ -1505,6 +1735,7 @@ const ConfigModal = ({
     || {}
   );
   const evolutionScenario = getMultiScenarioGroupId(selectedScenario) === 'evolution';
+  const firmArchitecture = selectedScenario?.config_defaults?.firm_architecture_experiment;
   const externalOrderIntegrity = getExternalOrderIntegrity(selectedScenario);
   const cobwebConfig = selectedScenario?.config_defaults?.simulation?.cobweb_config || {};
   const cobwebGuidancePolicy = (
@@ -1513,6 +1744,10 @@ const ConfigModal = ({
   );
   const [controlPreset, setControlPreset] = useState(recommendedPreset);
   const [isEditing, setIsEditing] = useState(false);
+  const batchVariants = scenarioVariants.filter((variant) => /^firm_ablation_fd[1-5]_(ma|na|nc|sa)$/.test(getScenarioKey(variant)));
+  const [batchEnabled, setBatchEnabled] = useState(false);
+  const [batchRepeats, setBatchRepeats] = useState('1');
+  const [batchSelection, setBatchSelection] = useState(() => batchVariants.map(getScenarioKey));
   const [localForm, setLocalForm] = useState(() => (
     buildPresetConfigForm(selectedScenario, recommendedPreset, scenarioVariants)
   ));
@@ -1534,7 +1769,7 @@ const ConfigModal = ({
     if (targetScenarioId && targetScenarioId !== currentScenarioId) {
       onVariantChange(targetScenarioId);
     } else if (targetScenarioId === currentScenarioId && !scenarioMatchesControlPreset(targetScenario, presetId)) {
-      onNotify?.('info', 'This scenario has no separate scripted preset. The launch parameters will switch the run to scripted decision mode.');
+      onNotify?.('info', "This scenario has no separate scripted preset. The launch parameters will switch the run to scripted decision mode.");
     }
   };
 
@@ -1542,6 +1777,17 @@ const ConfigModal = ({
     setLocalForm((previous) => ({
       ...previous,
       [field]: value,
+      ...(field === 'fdExperimentCondition' ? {
+        maxDepartmentConcurrency: value === 'legacy'
+          ? toFormValue(selectedScenario?.config_defaults?.simulation?.max_department_concurrency)
+          : '1',
+        agentRunSteps: value === 'legacy'
+          ? toFormValue(selectedScenario?.config_defaults?.simulation?.agent_run_steps) : '20',
+        serviceTotalSteps: value === 'legacy'
+          ? toFormValue(selectedScenario?.config_defaults?.simulation?.service_total_steps) : '20',
+        singlePrewarmRounds: '10',
+        singleHandoffDay: '10',
+      } : {}),
     }));
   };
 
@@ -1550,22 +1796,28 @@ const ConfigModal = ({
       const next = !previous;
       onNotify?.(
         'success',
-        next ? 'Temporary configuration editing enabled.' : 'Returned to the read-only configuration view.'
+        next ? "Temporary configuration editing enabled." : "Returned to the read-only configuration view."
       );
       return next;
     });
   };
 
-  const fieldDisabled = disabled || !isEditing;
+  const operationalFieldDisabled = disabled || !isEditing;
+  const inheritedC3 = firmArchitecture?.architecture === 'centralized' && firmArchitecture.baseline_group === 'C3';
+  const fixedFD = /^fd[12345]$/.test(firmArchitecture?.family || '');
+  const fieldDisabled = operationalFieldDisabled || inheritedC3 || fixedFD;
+  const fdOptions = selectedScenario?.config_defaults?.fd_experiment_options || [];
+  const fdActive = (fdOptions.length > 0 && localForm.fdExperimentCondition !== 'legacy')
+    || /^fd[12345]$/.test(firmArchitecture?.family || '');
   const agentRunLocked = controlPreset !== 'scripted' && Boolean(activeAgentJob);
-  const runDisabled = disabled || agentRunLocked;
+  const runDisabled = disabled || agentRunLocked || Boolean(activeBatch);
 
   return (
     <div className="experiment-config-modal-backdrop" role="presentation">
       <div className="experiment-config-modal" role="dialog" aria-modal="true" aria-label="Scenario Configuration">
         <header className="experiment-config-modal-header">
           <div>
-            <span>{isSingle ? 'Enterprise Case Configuration' : 'Multi-Enterprise Scenario Configuration'}</span>
+            <span>{isSingle ? "Enterprise Case Configuration" : "Multi-Enterprise Scenario Configuration"}</span>
             <strong>{getScenarioLabel(selectedScenario)}</strong>
           </div>
           <button type="button" className="experiment-config-close" onClick={onClose}>
@@ -1576,7 +1828,7 @@ const ConfigModal = ({
         <div className="experiment-config-modal-body">
           <section className="experiment-design-summary">
             <div>
-              <h4>Experiment Group</h4>
+              <h4>Experiment group</h4>
               <div className="experiment-design-heading">
                 <ExperimentGroupBadge group={selectedExperimentMeta.id} />
                 <strong>{selectedExperimentMeta.fullLabel}</strong>
@@ -1592,7 +1844,7 @@ const ConfigModal = ({
               {getMultiScenarioGroupId(selectedScenario) === 'cobweb' && (
                 <>
                   <InfoRow label="Experiment Role" value={getFormalExperimentRoleLabel(selectedScenario)} />
-                  <InfoRow label="Parameter Regime" value={formalExperimentConfig.parameter_regime || 'Exploratory'} />
+                  <InfoRow label="Parameter Regime" value={formalExperimentConfig.parameter_regime || "Exploratory"} />
                   <InfoRow label="Response Controller" value={cobwebConfig.production_response_mode || '-'} />
                   <InfoRow label="Decision Profile" value={cobwebConfig.decision_profile || '-'} />
                   <InfoRow
@@ -1601,7 +1853,7 @@ const ConfigModal = ({
                   />
                   <InfoRow
                     label="Mechanism guidance"
-                    value={cobwebGuidancePolicy.enabled ? 'Enabled' : 'Disabled'}
+                    value={cobwebGuidancePolicy.enabled ? "Enabled" : "Disabled"}
                   />
                 </>
               )}
@@ -1610,20 +1862,20 @@ const ConfigModal = ({
               <InfoRow
                 label="Product Validation"
                 value={externalOrderIntegrity.enabled
-                  ? (externalOrderIntegrity.ok ? 'Passed' : 'Mismatch')
+                  ? (externalOrderIntegrity.ok ? "Passed" : "Mismatch")
                   : '-'}
               />
               <InfoRow
                 label="Long-Horizon Policy"
                 value={longRunPolicy.enabled
                   ? `Enabled / ${longRunPolicy.history_days || '-'}-turn history`
-                  : (formalExperimentConfig.ready_for_formal_run ? 'Formal 40-turn run' : '-')}
+                  : (formalExperimentConfig.ready_for_formal_run ? `Formal ${formalExperimentConfig.total_steps || 40} turns` : '-')}
               />
               {externalEnvironmentPolicy.enabled && (
                 <InfoRow
                   label="External Shocks"
                   value={(externalEnvironmentPolicy.events || [])
-                    .map((event) => `Turn ${event.turn}: ${event.label}`)
+                    .map((event) => `Round ${event.turn}: ${event.label}`)
                     .join(' / ')}
                 />
               )}
@@ -1636,11 +1888,38 @@ const ConfigModal = ({
             </div>
           </section>
 
+          {batchVariants.length > 0 && (
+            <section>
+              <h4>Automatic batch</h4>
+              <label>
+                <input type="checkbox" checked={batchEnabled} disabled={disabled}
+                  onChange={(event) => setBatchEnabled(event.target.checked)} />Run multiple groups of this FD serially</label>
+              {batchEnabled && (
+                <>
+                  <div className="experiment-ops-config-grid">
+                    {batchVariants.map((variant) => {
+                      const id = getScenarioKey(variant);
+                      return <label key={id}>
+                        <input type="checkbox" checked={batchSelection.includes(id)} disabled={disabled}
+                          onChange={(event) => setBatchSelection((previous) => event.target.checked
+                            ? [...previous, id] : previous.filter((value) => value !== id))} />
+                        {getExperimentGroup(variant) === 'MA' ? 'Full / MA' : getExperimentGroup(variant)}
+                      </label>;
+                    })}
+                    <ConfigField label="Repeats per group" type="number" min="1" max="20"
+                      value={batchRepeats} onChange={setBatchRepeats} disabled={disabled} />
+                  </div>
+                  <p className="experiment-ops-note">Total {batchSelection.length * Number(batchRepeats || 0)} independent jobs, executed in the displayed group order for each repeat. Each uses its own default frozen configuration rather than temporary form edits, with a new job, process and data directory. The server continues after the browser closes. Final failure or stop pauses the batch; existing within-task retries remain unchanged.</p>
+                </>
+              )}
+              {activeBatch && <p className="experiment-ops-note warning">Batch {activeBatch.batch_id} is active. Finish or pause it before launching another task.</p>}
+            </section>
+          )}
           <section>
             <h4>Fixed Run Configuration</h4>
             <div className="experiment-preset-switch">
               {Object.values(CONTROL_PRESETS)
-                .filter((preset) => !evolutionScenario || preset.id === 'agent')
+                .filter((preset) => (!evolutionScenario && !firmArchitecture?.enabled) || preset.id === 'agent')
                 .map((preset) => (
                 <button
                   key={preset.id}
@@ -1649,16 +1928,17 @@ const ConfigModal = ({
                   onClick={() => handlePresetChange(preset.id)}
                   disabled={disabled}
                 >
-                  <strong>{preset.label}</strong>
-                  <span>{preset.description}</span>
+                  <strong>{firmArchitecture?.architecture === 'centralized' ? "Unified enterprise Agent" : preset.label}</strong>
+                  <span>{firmArchitecture?.architecture === 'centralized'
+                    ? "One enterprise decision maker performs diagnosis and all enabled functions, followed by operating/trade execution."
+                    : preset.description}</span>
                 </button>
               ))}
             </div>
             {agentRunLocked && (
               <p className="experiment-ops-note warning">
                 Agent job {formatShortRunId(activeAgentJob.job_id)} is currently
-                {' '}{STATUS_LABELS[activeAgentJob.status] || activeAgentJob.status}. Only one Agent Skill run can execute at a time; fixed-rule runs may execute separately.
-              </p>
+                {STATUS_LABELS[activeAgentJob.status] || activeAgentJob.status} state. Only one Agent Skill job may run at a time; scripted jobs can run concurrently.</p>
             )}
             <p className="experiment-ops-note">
               This modal shows a configuration snapshot. Use "Modify Configuration" for temporary launch-time changes; closing the modal does not update preset defaults.
@@ -1670,7 +1950,7 @@ const ConfigModal = ({
               <h4>Experiment Configuration</h4>
               <div className="experiment-ops-config-grid">
                 <label className="experiment-config-wide-field">
-                  <span>Scenario Variant / Comparison Group</span>
+                  <span>Experiment / ablation condition</span>
                   <select
                     value={getScenarioKey(selectedScenario)}
                     onChange={(event) => onVariantChange(event.target.value)}
@@ -1683,7 +1963,52 @@ const ConfigModal = ({
                     ))}
                   </select>
                 </label>
+                {fdOptions.length > 0 && (
+                  <label className="experiment-config-wide-field">
+                    <span>{controlPreset === 'scripted' ? "Scripted policy" : "Historical configuration"}</span>
+                    <select value={localForm.fdExperimentCondition}
+                      onChange={(event) => handleFieldChange('fdExperimentCondition', event.target.value)}
+                      disabled={disabled}>
+                      {fdOptions.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                    {controlPreset !== 'scripted' && <small>For matched ablations, select Full / MA, NA, NC or SA above.</small>}
+                  </label>
+                )}
               </div>
+            </section>
+          )}
+
+          {firmArchitecture?.enabled && (
+            <section>
+              <h4>Enterprise architecture ablation</h4>
+              <p className="experiment-ops-note">
+                {firmArchitecture.arm ? ({ ma: "Full / MA: organizational enterprise", na: "NA: no dynamic diagnosis", nc: "NC: no shared coordination", sa: "SA: unified enterprise decision" }[firmArchitecture.arm]) : firmArchitecture.architecture === 'centralized' ? "SA: unified enterprise decision" : "MA: independent diagnosis and departments"}. Output and business failures use feedback retries; unresolved ordinary failures are recorded while simulation continues. Authentication, configuration or persistent tool-channel failures terminate the job.</p>
+              <div className="experiment-ops-config-grid">
+                <InfoRow label="Reference regime" value={firmArchitecture.baseline_group === 'C3' ? "Archived C3 operating regime"
+                  : /^fd[12345]$/.test(firmArchitecture.family || '') ? `${firmArchitecture.family.toUpperCase()} matched operating conditions` : "Legacy modified C2 development protocol"} />
+                <InfoRow label="Reference scenario" value={firmArchitecture.source} />
+                {firmArchitecture.arm && <>
+                  <ConfigField label="Batch ID (shared across groups)" value={localForm.fdBatchId}
+                    disabled={operationalFieldDisabled} onChange={(value) => handleFieldChange('fdBatchId', value)} />
+                  <ConfigField label="Repeat block" type="number" min="1" value={localForm.fdRepeatId}
+                    disabled={operationalFieldDisabled} onChange={(value) => handleFieldChange('fdRepeatId', value)} />
+                </>}
+                {firmArchitecture.baseline?.source_run_id && (
+                  <InfoRow label="Reference run" value={firmArchitecture.baseline.source_run_id} />
+                )}
+                <InfoRow label="Protocol version" value={firmArchitecture.version} />
+                <InfoRow label="Execution adapter version" value={firmArchitecture.execution_adapter_version} />
+                <ConfigField label="Maximum attempts per task (including first)" type="number" min="1" max="10"
+                  value={localForm.firmMaxAttempts} disabled={operationalFieldDisabled || Boolean(firmArchitecture.arm)}
+                  onChange={(value) => handleFieldChange('firmMaxAttempts', value)} />
+                <ConfigField label="Per-attempt timeout (seconds)" type="number" min="1" max="3600"
+                  value={localForm.firmAttemptTimeout} disabled={operationalFieldDisabled || Boolean(firmArchitecture.arm)}
+                  onChange={(value) => handleFieldChange('firmAttemptTimeout', value)} />
+              </div>
+              {inheritedC3 && <p className="experiment-ops-note">Operating parameters inherit the frozen reference configuration. Round count, attempts and per-attempt timeout may be changed; formal comparison uses the same 40 rounds as the reference.</p>}
+              {fixedFD && <p className="experiment-ops-note">FD groups share their scenario operating conditions: 20 rounds, including 10 warm-up rounds. The matched protocol also freezes retries and timeout.</p>}
             </section>
           )}
 
@@ -1702,7 +2027,7 @@ const ConfigModal = ({
                 min="1"
                 value={localForm.agentRunSteps}
                 onChange={(value) => handleFieldChange('agentRunSteps', value)}
-                disabled={fieldDisabled || evolutionScenario}
+                disabled={operationalFieldDisabled || evolutionScenario || fdActive}
               />
               <ConfigField
                 label="Environment Turns"
@@ -1710,7 +2035,7 @@ const ConfigModal = ({
                 min="1"
                 value={localForm.serviceTotalSteps}
                 onChange={(value) => handleFieldChange('serviceTotalSteps', value)}
-                disabled={fieldDisabled || evolutionScenario}
+                disabled={operationalFieldDisabled || evolutionScenario || fdActive}
               />
               <ConfigField
                 label="Enterprise Concurrency"
@@ -1718,7 +2043,7 @@ const ConfigModal = ({
                 min="1"
                 value={localForm.maxEnterpriseConcurrency}
                 onChange={(value) => handleFieldChange('maxEnterpriseConcurrency', value)}
-                disabled={fieldDisabled}
+                disabled={fieldDisabled || fdActive}
               />
               <ConfigField
                 label="Department Concurrency"
@@ -1726,7 +2051,7 @@ const ConfigModal = ({
                 min="1"
                 value={localForm.maxDepartmentConcurrency}
                 onChange={(value) => handleFieldChange('maxDepartmentConcurrency', value)}
-                disabled={fieldDisabled}
+                disabled={fieldDisabled || fdActive}
               />
             </div>
           </section>
@@ -1781,11 +2106,11 @@ const ConfigModal = ({
                 disabled={fieldDisabled}
               />
               <label>
-                <span>Per-Turn Inventory Cost</span>
+                <span>Per-Round Inventory Cost</span>
                 <select
                   value={localForm.inventoryCostDaily}
                   onChange={(event) => handleFieldChange('inventoryCostDaily', event.target.value)}
-                  disabled={fieldDisabled || evolutionScenario}
+                  disabled={fieldDisabled || evolutionScenario || firmArchitecture?.enabled}
                 >
                   <option value="true">Enabled</option>
                   <option value="false">Disabled</option>
@@ -1806,7 +2131,7 @@ const ConfigModal = ({
                 label="Rule mode"
                 value={localForm.scriptedMode}
                 onChange={(value) => handleFieldChange('scriptedMode', value)}
-                disabled={fieldDisabled || evolutionScenario}
+                disabled={fieldDisabled || evolutionScenario || firmArchitecture?.enabled}
               />
             </div>
           </section>
@@ -1858,7 +2183,7 @@ const ConfigModal = ({
                   min="0"
                   value={localForm.singlePrewarmRounds}
                   onChange={(value) => handleFieldChange('singlePrewarmRounds', value)}
-                  disabled={fieldDisabled}
+                  disabled={fieldDisabled || fdActive}
                 />
                 <ConfigField
                   label="Decision Handover Turn"
@@ -1866,7 +2191,7 @@ const ConfigModal = ({
                   min="0"
                   value={localForm.singleHandoffDay}
                   onChange={(value) => handleFieldChange('singleHandoffDay', value)}
-                  disabled={fieldDisabled}
+                  disabled={fieldDisabled || fdActive}
                 />
               </div>
             </section>
@@ -1908,20 +2233,20 @@ const ConfigModal = ({
                   disabled={fieldDisabled}
                 />
                 <ConfigField
-                  label="Target Production Quantity"
+                  label={localForm.fdExperimentCondition === 'rb_simple' ? "Fixed production batch" : localForm.fdExperimentCondition === 'rb_revised' ? "Production quantity (net demand)" : "Target Production Quantity"}
                   type="number"
                   min="0"
-                  value={localForm.singleProductionQuantity}
+                  value={localForm.fdExperimentCondition === 'rb_simple' ? '250' : localForm.singleProductionQuantity}
                   onChange={(value) => handleFieldChange('singleProductionQuantity', value)}
-                  disabled={fieldDisabled}
+                  disabled={fieldDisabled || ['rb_revised', 'rb_simple'].includes(localForm.fdExperimentCondition)}
                 />
                 <ConfigField
-                  label="Daily Capacity Limit"
+                  label={localForm.fdExperimentCondition === 'rb_simple' ? "Fixed daily capacity limit" : localForm.fdExperimentCondition === 'rb_revised' ? "Capacity limit (available capacity)" : "Daily Capacity Limit"}
                   type="number"
                   min="0"
-                  value={localForm.singleProductionDailyCapacity}
+                  value={localForm.fdExperimentCondition === 'rb_simple' ? '250' : localForm.singleProductionDailyCapacity}
                   onChange={(value) => handleFieldChange('singleProductionDailyCapacity', value)}
-                  disabled={fieldDisabled}
+                  disabled={fieldDisabled || ['rb_revised', 'rb_simple'].includes(localForm.fdExperimentCondition)}
                 />
                 <ConfigField
                   label="Production-Line Build Turns"
@@ -2039,15 +2364,18 @@ const ConfigModal = ({
             disabled={disabled}
             onClick={handleEditToggle}
           >
-            {isEditing ? 'Return to Read-Only View' : 'Modify Configuration'}
+            {isEditing ? "Return to Read-Only View" : "Modify Configuration"}
           </button>
           <button
             type="button"
             className="experiment-ops-primary-action"
-            disabled={runDisabled}
-            onClick={() => onRun({ form: localForm, preset: controlPreset })}
+            disabled={runDisabled || (batchEnabled && (!batchSelection.length || !Number.isInteger(Number(batchRepeats))
+              || Number(batchRepeats) < 1 || Number(batchRepeats) > 20))}
+            onClick={() => batchEnabled
+              ? onBatchRun({ variants: batchVariants.filter((variant) => batchSelection.includes(getScenarioKey(variant))), repeats: batchRepeats })
+              : onRun({ form: localForm, preset: controlPreset })}
           >
-            Run Now
+            {batchEnabled ? "Start automatic batch" : "Run now"}
           </button>
         </footer>
       </div>
@@ -2057,6 +2385,7 @@ const ConfigModal = ({
 
 const RunDetailModal = ({
   scenario,
+  canOperate = false,
   jobs = [],
   runs = [],
   submittingAction = '',
@@ -2097,7 +2426,7 @@ const RunDetailModal = ({
     } else {
       setSummaryErrors((previous) => ({
         ...previous,
-        [jobId]: result.error || 'Could not read running summary',
+        [jobId]: result.error || "Could not read running summary",
       }));
     }
     setSummaryLoadingIds((previous) => {
@@ -2181,7 +2510,8 @@ const RunDetailModal = ({
                       <strong className={`experiment-ops-status ${status}`}>
                         {STATUS_LABELS[job.status] || formatValue(job.status)}
                       </strong>
-                      <span>{formatValue(job.scenario_id)}</span>
+                      <span>{formatValue(job.scenario_id)}{getFdConditionLabel(job)
+                        ? ` · ${getFdConditionLabel(job)}` : ''}</span>
                       <small>{formatTime(job.updated_at || job.created_at)}</small>
                       <code>{formatValue(job.job_id)}</code>
                       <div className="run-detail-actions">
@@ -2189,22 +2519,22 @@ const RunDetailModal = ({
                           <button
                             type="button"
                             className="experiment-ops-warning-action"
-                            disabled={isStopRequested || submittingAction === `stop-${job.job_id}`}
+                            disabled={!canOperate || isStopRequested || submittingAction === `stop-${job.job_id}`}
                             onClick={() => onStopJob?.(job)}
-                            title={isStopRequested ? 'A stop request has been submitted and will take effect at the next turn boundary.' : 'Request a controlled stop for the current simulation'}
+                            title={isStopRequested ? "A stop request has been submitted and will take effect at the next turn boundary." : "Request a controlled stop for the current simulation"}
                           >
-                            {isStopRequested ? 'Stopping' : 'Abort Simulation'}
+                            {isStopRequested ? "Stopping" : "Abort Simulation"}
                           </button>
                         )}
                         {canResume && (
                           <button
                             type="button"
                             className="experiment-ops-primary-action"
-                            disabled={submittingAction === `resume-${job.job_id}`}
+                            disabled={!canOperate || submittingAction === `resume-${job.job_id}`}
                             onClick={() => onResumeJob?.(job)}
-                            title={`Resume from Turn ${Number(job.last_complete_round ?? job.completed_steps - 1) + 1} through Turn 199.`}
+                            title={`Resume from Round ${Number(job.last_complete_round ?? job.completed_steps - 1) + 1} through Round 199.`}
                           >
-                            {submittingAction === `resume-${job.job_id}` ? 'Preparing...' : 'Resume Run'}
+                            {submittingAction === `resume-${job.job_id}` ? "Preparing..." : "Resume Run"}
                           </button>
                         )}
                         <button
@@ -2212,12 +2542,12 @@ const RunDetailModal = ({
                           className="experiment-ops-secondary-action ghost"
                           onClick={() => toggleJobDetails(job.job_id)}
                         >
-                          {isExpanded ? 'Collapse Details' : 'View Details'}
+                          {isExpanded ? "Collapse Details" : "View Details"}
                         </button>
                         <button
                           type="button"
                           className="experiment-ops-danger-action"
-                          disabled={submittingAction === `delete-${job.job_id}`}
+                          disabled={!canOperate || submittingAction === `delete-${job.job_id}`}
                           onClick={() => setDeleteCandidate(job)}
                           title="Force termination and deletion of task records"
                         >
@@ -2281,11 +2611,11 @@ const RunDetailModal = ({
                         <button
                           type="button"
                           className="experiment-ops-primary-action"
-                          disabled={submittingAction === `resume-artifact-${run.id}`}
+                          disabled={!canOperate || submittingAction === `resume-artifact-${run.id}`}
                           onClick={() => onResumeArtifact?.(run)}
-                          title={`Import the archived run and resume from Turn ${Number(run.max_day) + 1}.`}
+                          title={`Import the archived run and resume from Round ${Number(run.max_day) + 1}.`}
                         >
-                          {submittingAction === `resume-artifact-${run.id}` ? 'Importing' : 'Import and Continue'}
+                          {submittingAction === `resume-artifact-${run.id}` ? "Importing" : "Import and Continue"}
                         </button>
                       )}
                     </div>
@@ -2305,8 +2635,8 @@ const RunDetailModal = ({
           title="Confirm Delete Task Record"
           message={`Delete job record ${deleteCandidate.job_id}? Archived run artifacts will be retained.`}
           detail={TERMINAL_STATUSES.has(normalizeJobStatus(deleteCandidate.status))
-            ? 'The job has finished, so only its operations record will be deleted.'
-            : 'The job is still active. The system will first request termination of its associated process, then delete the operations record.'}
+            ? "The job has finished, so only its operations record will be deleted."
+            : "The job is still active. The system will first request termination of its associated process, then delete the operations record."}
           confirmLabel="Force Delete"
           cancelLabel="Cancel"
           danger
@@ -2331,8 +2661,8 @@ const JobRoundSummary = ({ summary, loading = false, error = '', fallbackJob }) 
           <strong>{formatValue(completedSteps)} / {formatValue(plannedTotalSteps)} turns</strong>
         </div>
         <div>
-          <span>Latest Available Turn</span>
-          <strong>{summary?.current_round_label || 'No completed turn yet'}</strong>
+          <span>Latest Available Round</span>
+          <strong>{summary?.current_round_label || "No completed turn yet"}</strong>
         </div>
         <div>
           <span>Total Enterprise Cash</span>
@@ -2340,7 +2670,18 @@ const JobRoundSummary = ({ summary, loading = false, error = '', fallbackJob }) 
         </div>
       </div>
 
-      {loading && <p className="job-round-summary-muted">Refreshing running summary...</p>}
+      {summary?.firm_architecture_quality?.schema_version && (
+        <div className="job-round-summary-head">
+          <InfoRow label="Decision phases available" value={`${summary.firm_architecture_quality.available_phases} / ${summary.firm_architecture_quality.phase_count}`} />
+          <InfoRow label="Valid first attempts" value={`${summary.firm_architecture_quality.first_attempt_valid_tasks} / ${summary.firm_architecture_quality.model_task_count}`} />
+          <InfoRow label="Model attempts / timeouts" value={`${summary.firm_architecture_quality.attempt_count} / ${summary.firm_architecture_quality.timeout_attempts}`} />
+          <InfoRow label="Recovered tasks / unsubmitted phases" value={`${summary.firm_architecture_quality.recovered_tasks} / ${summary.firm_architecture_quality.technical_no_submission_phases}`} />
+          <InfoRow label="Business rejections / unknown receipts" value={`${summary.firm_architecture_quality.business_rejections} / ${summary.firm_architecture_quality.unknown_execution_results}`} />
+          <InfoRow label="Pre-execution rejections / unresolved" value={`${summary.firm_architecture_quality.pre_execution_rejections || 0} / ${summary.firm_architecture_quality.unresolved_rejections || 0}`} />
+        </div>
+      )}
+
+      {loading && <LoadingState label="Refreshing round summary…" variant="compact"/>}
       {error && <p className="run-detail-error">{error}</p>}
       {!loading && !error && summary?.message && (
         <p className="job-round-summary-muted">{summary.message}</p>
@@ -2361,7 +2702,7 @@ const JobRoundSummary = ({ summary, loading = false, error = '', fallbackJob }) 
                       <div className="job-department-action-head">
                         <strong>{department.department_label || department.department}</strong>
                         <span className={`job-action-status ${department.success === false ? 'failed' : department.success === true ? 'success' : 'pending'}`}>
-                          {department.success === false ? 'Failed' : department.success === true ? 'Success' : 'Pending confirmation'}
+                          {department.success === false ? "Failed" : department.success === true ? "Success" : "Pending confirmation"}
                         </span>
                       </div>
                       <div className="job-action-chips">

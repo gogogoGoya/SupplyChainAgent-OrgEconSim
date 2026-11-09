@@ -286,8 +286,8 @@ def test_e1_analyst_uses_bounded_observation_without_rewriting_archive(tmp_path)
     assert "OLD_SO_0" not in serialized
     assert "large_duplicate" not in serialized
     assert "irrelevant_history" not in serialized
-    assert "E1 bounded long-horizon analysis input" in prompt
-    assert "Do not read the raw observation_day92.txt" in prompt
+    assert "Bounded long-horizon input" in prompt
+    assert "do not open raw observation_day92.txt" in prompt
     assert len(serialized) < len(original_raw)
     assert raw_path.read_text(encoding="utf-8") == original_raw
 

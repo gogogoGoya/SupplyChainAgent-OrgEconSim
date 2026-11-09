@@ -2,12 +2,63 @@
 <html lang="en-US">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Supply Chain Enterprise Simulation</title>
+    <style>
+      /* Visible before the application bundle arrives, including slow connections. */
+      body{margin:0;background:#f5f7fb;color:#243b58;font-family:system-ui,sans-serif}
+      .viewer-boot{min-height:100vh;display:grid;place-items:center;padding:24px;box-sizing:border-box}
+      .viewer-boot-card{width:min(100%,460px);box-sizing:border-box;padding:28px;border:1px solid #d8e3f1;border-radius:18px;background:white;box-shadow:0 12px 40px #28456a12}
+      .viewer-boot h1{font-size:22px;margin:0 0 12px}.viewer-boot p{line-height:1.6;font-size:14px;color:#60748e}
+      .viewer-boot-track{height:5px;overflow:hidden;border-radius:8px;background:#e8eff8;margin:20px 0}
+      .viewer-boot-track span{display:block;width:38%;height:100%;border-radius:inherit;background:#5c78d7;animation:viewer-boot-progress 1.4s ease-in-out infinite}
+      .viewer-recovery{position:fixed;inset:0;z-index:30000;background:#f5f7fb}
+      .viewer-recovery[hidden]{display:none}
+      .viewer-boot button{padding:8px 12px;border:1px solid #c6d5e8;border-radius:8px;background:#f5f8ff;color:#294e81;cursor:pointer}
+      @keyframes viewer-boot-progress{0%{transform:translateX(-110%)}100%{transform:translateX(370%)}}
+      @media(prefers-reduced-motion:reduce){.viewer-boot-track span{animation:none;width:100%;opacity:.6}}
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="viewer-boot" role="status" aria-live="polite" aria-busy="true">
+        <div class="viewer-boot-card">
+          <h1>Supply Chain Enterprise Simulation</h1>
+          <p id="viewer-boot-label">Loading the results viewer…</p>
+          <div class="viewer-boot-track" aria-hidden="true"><span></span></div>
+          <p>If the viewer does not open, reload this page to get the latest release.</p>
+          <button type="button" onclick="location.reload()">Reload viewer</button>
+          <noscript><p>Enable JavaScript in your browser to explore the published results.</p></noscript>
+        </div>
+      </div>
+    </div>
+    <!-- Recovery stays outside React so a failed mount cannot remove it. -->
+    <div id="viewer-recovery" class="viewer-boot viewer-recovery" role="alert" hidden>
+      <div class="viewer-boot-card">
+        <h1>The viewer could not be displayed</h1>
+        <p>Reload to reopen the viewer and get the current release.</p>
+        <button type="button" onclick="location.reload()">Reload viewer</button>
+      </div>
+    </div>
+    <script>
+      // Leave working views intact; recover only when an error leaves the root empty.
+      function recoverEmptyViewer() {
+        var root = document.getElementById('root');
+        if (root && !root.innerText.trim()) document.getElementById('viewer-recovery').hidden = false;
+      }
+      function reportViewerFailure(event) {
+        var boot = document.querySelector('#root .viewer-boot');
+        if (boot && (event.type === 'unhandledrejection' || event.target === window || event.target?.tagName === 'SCRIPT')) {
+          document.getElementById('viewer-boot-label').textContent = 'The viewer could not be loaded. Reload to try again.';
+          boot.setAttribute('aria-busy', 'false');
+          document.querySelector('.viewer-boot-track').hidden = true;
+        }
+        setTimeout(recoverEmptyViewer, 0);
+      }
+      window.addEventListener('error', reportViewerFailure, true);
+      window.addEventListener('unhandledrejection', reportViewerFailure);
+    </script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

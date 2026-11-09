@@ -18,24 +18,41 @@ from .trade_entities import (
 )
 import itertools
 
+from contextvars import ContextVar
+
 _id_counter = itertools.count(1)
+_session_counter = ContextVar("exchange_session_counter", default=None)
+
+def bind_exchange_counter(counter):
+    return _session_counter.set(counter)
+
+def reset_exchange_counter(token):
+    _session_counter.reset(token)
 
 def next_id(prefix: str) -> str:
-    return f"{prefix}_{next(_id_counter):06d}"
-
+    counter = _session_counter.get()
+    if counter is None:
+        return f"{prefix}_{next(_id_counter):06d}"
+    value = counter[0]
+    counter[0] += 1
+    return f"{prefix}_{value:06d}"
 
 def get_next_id_counter_value() -> int:
-    """Peek at the process-wide exchange id counter without consuming it."""
     global _id_counter
-    next_value = next(_id_counter)
-    _id_counter = itertools.count(next_value)
-    return next_value
-
+    counter = _session_counter.get()
+    if counter is not None:
+        return counter[0]
+    value = next(_id_counter)
+    _id_counter = itertools.count(value)
+    return value
 
 def restore_next_id_counter_value(next_value: int) -> None:
-    """Restore the exchange id counter after loading a runtime checkpoint."""
     global _id_counter
-    _id_counter = itertools.count(max(1, int(next_value)))
+    counter = _session_counter.get()
+    if counter is not None:
+        counter[0] = max(1, int(next_value))
+    else:
+        _id_counter = itertools.count(max(1, int(next_value)))
 
 class Exchange:
     """

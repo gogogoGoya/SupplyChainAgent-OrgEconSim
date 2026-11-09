@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import subprocess
 import sys
@@ -12,6 +13,7 @@ from zoneinfo import ZoneInfo
 from typing import Any, Callable, Dict, List, Optional
 
 from config.integration_profiles import get_scenario_integration_profiles
+from config.platform_access import require_execution_enabled
 from config.project_paths import PROJECT_ROOT, WORKSPACE_JOBS_ROOT, resolve_project_path
 from persistence.sql_mirror import SQLiteMirrorRepository
 from persistence.sql_mirror_runtime import get_sql_mirror_repository
@@ -19,6 +21,8 @@ from persistence.sql_mirror_runtime import get_sql_mirror_repository
 from .facade import OperationsFacade
 from .runner_adapter import OperationsSimulationRunner
 from .worker import OperationsWorker
+from .provenance import capture_provenance, assert_provenance
+from .process_health import process_alive, process_identity
 
 
 RepositoryFactory = Callable[[Dict[str, Any]], Optional[Any]]
@@ -31,6 +35,7 @@ AGENT_ENV_KEYS = {
     "ANTHROPIC_BASE_URL",
     "AGENT_GATEWAY_BASE_URL",
     "ANTHROPIC_MODEL",
+    "ANTHROPIC_CEO_MODEL",
     "ANTHROPIC_MODEL_LIST",
     "ANTHROPIC_AUTH_TOKEN",
     "ANTHROPIC_API_KEY",
@@ -64,20 +69,14 @@ def _load_runtime_env_file_values(project_root: Path) -> Dict[str, str]:
     return values
 
 
-def _looks_like_project_service_url(value: str, simulation_base: str = "") -> bool:
-    text = str(value or "").strip().rstrip("/")
-    if simulation_base and text == str(simulation_base or "").strip().rstrip("/"):
-        return True
-    return text in {
-        "http://127.0.0.1:8000",
-        "http://localhost:8000",
-        "http://127.0.0.1:3000",
-        "http://localhost:3000",
-    }
-
-
 def _refresh_agent_env_for_child(env: Dict[str, str], project_root: Path) -> None:
-    """Keep isolated operation workers aligned with scripts/.env Agent settings."""
+    """Read current file settings for each new worker, ahead of inherited values.
+
+    The backend may have started before a gateway/key rotation. Keep its own
+    environment untouched, but override the worker's Agent settings with the
+    non-empty values explicitly configured in scripts/.env.
+    """
+    require_execution_enabled()
     file_values = {
         key: value
         for key, value in _load_runtime_env_file_values(project_root).items()
@@ -86,25 +85,26 @@ def _refresh_agent_env_for_child(env: Dict[str, str], project_root: Path) -> Non
     if not file_values:
         return
 
-    simulation_base = env.get("SIMULATION_API_BASE_URL", "")
+    env.update(file_values)
     file_agent_base = file_values.get("ANTHROPIC_BASE_URL") or file_values.get(
         "AGENT_GATEWAY_BASE_URL"
     )
-    current_agent_base = env.get("ANTHROPIC_BASE_URL", "")
-    if file_agent_base and (
-        not current_agent_base
-        or _looks_like_project_service_url(current_agent_base, simulation_base)
-    ):
+    if file_agent_base:
         env["ANTHROPIC_BASE_URL"] = file_agent_base
+        env["AGENT_GATEWAY_BASE_URL"] = file_agent_base
 
-    for key, value in file_values.items():
-        if key == "ANTHROPIC_BASE_URL":
-            continue
-        if key == "AGENT_GATEWAY_BASE_URL" and env.get("ANTHROPIC_BASE_URL"):
-            env.setdefault(key, value)
-            continue
-        if not env.get(key):
-            env[key] = value
+    # EnvironmentConfig prefers AUTH_TOKEN. A new API_KEY alone must also
+    # replace any inherited AUTH_TOKEN, and vice versa.
+    file_auth = file_values.get("ANTHROPIC_AUTH_TOKEN") or file_values.get("ANTHROPIC_API_KEY")
+    if file_auth:
+        env["ANTHROPIC_AUTH_TOKEN"] = file_auth
+        env["ANTHROPIC_API_KEY"] = file_auth
+
+    if file_values.get("ANTHROPIC_MODEL"):
+        # These optional selectors otherwise keep using inherited old models.
+        for key in ("ANTHROPIC_MODEL_LIST", "ANTHROPIC_CEO_MODEL"):
+            if key not in file_values:
+                env.pop(key, None)
 
 
 def _redact_agent_env(env: Dict[str, str]) -> Dict[str, str]:
@@ -167,7 +167,7 @@ class OperationsAPI:
         job_id: Optional[str] = None,
         config_overrides: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        return self._capture(
+        return self._capture_control(
             lambda: self._facade(scenario_id).create_experiment_from_scenario(
                 scenario_id=scenario_id,
                 planned_total_steps=planned_total_steps,
@@ -187,7 +187,7 @@ class OperationsAPI:
         worker_id: Optional[str] = None,
         artifact_root: Optional[str] = None,
     ) -> Dict[str, Any]:
-        return self._capture(
+        return self._capture_control(
             lambda: self._facade(scenario_id).start_experiment(
                 job_id,
                 run_id=run_id,
@@ -220,7 +220,7 @@ class OperationsAPI:
         target_total_steps: Optional[int] = None,
         requested_by: Optional[str] = None,
     ) -> Dict[str, Any]:
-        return self._capture(
+        return self._capture_control(
             lambda: self._facade(scenario_id).resume_experiment(
                 job_id,
                 target_total_steps=target_total_steps,
@@ -238,7 +238,7 @@ class OperationsAPI:
         target_total_steps: int = 200,
         requested_by: Optional[str] = None,
     ) -> Dict[str, Any]:
-        return self._capture(
+        return self._capture_control(
             lambda: self._facade(scenario_id).import_resumable_experiment(
                 artifact_root=artifact_root,
                 run_meta=run_meta,
@@ -278,12 +278,18 @@ class OperationsAPI:
         worker_id: Optional[str] = None,
         client_dir: Optional[str] = None,
         workspace_dir: Optional[str] = None,
+        batch_owner: Optional[str] = None,
     ) -> Dict[str, Any]:
         def callback() -> Any:
+            require_execution_enabled()
             repository = self._repository(scenario_id)
             job = repository.get_job(job_id)
             if not job:
                 raise ValueError(f"Unknown job_id: {job_id}")
+            if job.get("status") == "batch_pending":
+                raise ValueError('Batch-pending jobs can only be started by the batch scheduler.')
+            if batch_owner and job.get("batch_id") != batch_owner:
+                raise ValueError("Batch does not own this job")
             is_scripted_job = self._is_scripted_job(repository, job)
             if not _env_flag_enabled(os.getenv(OPERATIONS_CHILD_WORKER_ENV)):
                 if not is_scripted_job:
@@ -311,7 +317,9 @@ class OperationsAPI:
                 worker_id=worker_id or "operations-http-worker",
             ).run_job(job_id)
 
-        return self._capture(callback)
+        if _env_flag_enabled(os.getenv(OPERATIONS_CHILD_WORKER_ENV)):
+            return self._capture(callback)
+        return self._capture_control(callback, batch_owner=batch_owner)
 
     def _is_scripted_job(self, repository: Any, job: Dict[str, Any]) -> bool:
         tags = {str(tag).strip().lower() for tag in (job.get("tags") or [])}
@@ -347,6 +355,10 @@ class OperationsAPI:
                 continue
             if str(active_job.get("status") or "") not in active_statuses:
                 continue
+            if active_job.get("process_pid") and not process_alive(active_job["process_pid"], active_job.get("process_identity")):
+                continue
+            if active_job.get("status") == "queued" and not active_job.get("process_dispatched_at"):
+                continue
             if self._is_scripted_job(repository, active_job):
                 continue
             raise RuntimeError(
@@ -374,7 +386,7 @@ class OperationsAPI:
             }
         existing_pid = job.get("process_pid")
         if existing_pid and status in {"queued", "running", "stop_requested"}:
-            if self._process_is_alive(existing_pid):
+            if process_alive(existing_pid, job.get("process_identity")):
                 return {
                     "job_id": job.get("job_id"),
                     "status": status,
@@ -418,6 +430,14 @@ class OperationsAPI:
         if str(project_root) not in env["PYTHONPATH"].split(os.pathsep):
             env["PYTHONPATH"] = f"{project_root}{os.pathsep}{env['PYTHONPATH']}"
         _refresh_agent_env_for_child(env, project_root)
+        provenance = capture_provenance(project_root, env)
+        assert_provenance(job.get("execution_provenance"), provenance)
+        get_version = getattr(repository, "get_version", None)
+        version = get_version(job.get("config_version_id")) if callable(get_version) else None
+        if isinstance(version, dict):
+            provenance["scenario_config_sha256"] = hashlib.sha256(json.dumps(
+                {"scenario_config": version.get("scenario_config"), "integration_profiles": version.get("integration_profiles")},
+                sort_keys=True, default=str).encode()).hexdigest()
         _write_agent_env_snapshot(agent_env_path, env)
 
         stdout_handle = stdout_path.open("a", encoding="utf-8")
@@ -437,6 +457,8 @@ class OperationsAPI:
 
         updates = {
             "process_pid": process.pid,
+            "process_identity": process_identity(process.pid),
+            "execution_provenance": provenance,
             "process_worker_id": worker_id or "operations-scripted-process",
             "process_log": str(stdout_path),
             "process_error_log": str(stderr_path),
@@ -486,6 +508,20 @@ class OperationsAPI:
         scenario_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         return self._capture(lambda: self._facade(scenario_id).get_job(job_id))
+
+    def reconcile_jobs(self):
+        def callback():
+            require_execution_enabled()
+            repository = self._repository()
+            from .service import OperationsService
+            changed = []
+            for job in repository.list_jobs(limit=None):
+                if job.get("status") in {"queued", "running", "stop_requested"} and job.get("process_pid") and not process_alive(job["process_pid"], job.get("process_identity")):
+                    changed.append(OperationsService(repository).mark_failed(
+                        job["job_id"], error="Worker exited without a terminal receipt; sealed rounds retained",
+                        completed_steps=int(job.get("completed_steps") or 0), last_complete_round=job.get("last_complete_round")))
+            return changed
+        return self._capture(callback)
 
     def delete_job(
         self,
@@ -537,3 +573,13 @@ class OperationsAPI:
                     "message": str(exc),
                 },
             }
+
+    def _capture_control(self, callback: Callable[[], Any], *, batch_owner=None):
+        from .batch import BatchService, control_lock
+
+        def guarded():
+            require_execution_enabled()
+            with control_lock():
+                BatchService(self).assert_available(owner=batch_owner)
+                return callback()
+        return self._capture(guarded)

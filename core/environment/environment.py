@@ -256,8 +256,7 @@ class Environment:
             parameter: Data with seasonal information
                 """
         season = event_data.get('season')
-        # Achieving seasonal adjustment logic
-        pass
+        raise NotImplementedError("Seasonal events must use the configured external environment policy")
     
     def _adjust_logistics(self, event_data):
         """
@@ -267,8 +266,7 @@ class Environment:
             parameter: Data containing information on logistics adjustments
                 """
         delay_factor = event_data.get('delay_factor', 1.0)
-        # Achieving logistics logic
-        pass
+        raise NotImplementedError("Logistics events must use the configured external environment policy")
     
     def _update_price_index(self, event_data):
         """
@@ -279,8 +277,7 @@ class Environment:
                 """
         price_factor = event_data.get('price_factor', 1.0)
         product_id = event_data.get('product_id')
-        # Achieving updated logic of price indices
-        pass
+        raise NotImplementedError("Price events must use the configured market policy")
     
     def _process_messages_and_negotiations(self):
         """

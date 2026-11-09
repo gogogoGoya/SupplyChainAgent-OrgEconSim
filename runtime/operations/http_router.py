@@ -9,8 +9,9 @@ import zipfile
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import quote
+from functools import lru_cache
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
@@ -30,6 +31,13 @@ from config.project_paths import (
 )
 
 from .api import OperationsAPI
+from config.platform_access import get_platform_access
+from runtime.platform_access import enforce_platform_access
+from core.public_artifacts import is_public_artifact
+from core.run_integrity import available_rounds, inspect_run
+from core.result_publication import published_member
+from runtime.result_access import private_results, result_access_scope
+from config.project_paths import PUBLIC_RESULTS_ROOT
 
 
 class CreateExperimentRequest(BaseModel):
@@ -39,6 +47,12 @@ class CreateExperimentRequest(BaseModel):
     requested_by: Optional[str] = None
     job_id: Optional[str] = None
     config_overrides: Dict[str, Any] = Field(default_factory=dict)
+
+
+class CreateBatchRequest(BaseModel):
+    items: List[CreateExperimentRequest]
+    repeats: int = Field(default=1, ge=1, le=20)
+    requested_by: str = "operations-page"
 
 
 class StartExperimentRequest(BaseModel):
@@ -89,12 +103,12 @@ class RunJobRequest(BaseModel):
 
 
 DEPARTMENT_LABELS = {
-    "finance": "Finance",
-    "hr": "Human Resources",
-    "inventory": "Inventory",
-    "procurement": "Procurement",
-    "production": "Production",
-    "sales": "Sales",
+    "finance": 'Finance',
+    "hr": 'Human Resources',
+    "inventory": 'Inventory',
+    "procurement": 'Procurement',
+    "production": 'Production',
+    "sales": 'Sales',
 }
 
 
@@ -121,9 +135,17 @@ def _json_response(response: Dict[str, Any]) -> JSONResponse:
     return JSONResponse(status_code=_status_code_for_error(response), content=response)
 
 
+@lru_cache(maxsize=256)
+def _cached_metadata(path, modified_ns, size):
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
 def _read_json(path: Path, default: Any = None) -> Any:
     try:
         if path.exists() and path.is_file():
+            if path.name in {"run_meta.json", "public_manifest.json"}:
+                stat = path.stat()
+                return _cached_metadata(str(path), stat.st_mtime_ns, stat.st_size)
             return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return default
@@ -200,6 +222,8 @@ def _path_is_relative_to(path: Path, parent: Path) -> bool:
 
 
 def _artifact_bases() -> Dict[str, Path]:
+    if not private_results.get():
+        return {"workspace_jobs": PUBLIC_RESULTS_ROOT / "runs", "simulation_runs": PUBLIC_RESULTS_ROOT / "legacy", "workspace_multi": PUBLIC_RESULTS_ROOT / "current"}
     return {
         "workspace_multi": WORKSPACE_MULTI_ROOT,
         "workspace_jobs": WORKSPACE_JOBS_ROOT,
@@ -227,48 +251,7 @@ def _resolve_artifact_root(source: str, name: Optional[str] = None) -> Path:
 
 
 def _max_day_from_run_artifact(artifact_root: Path, run_meta: Dict[str, Any]) -> int:
-    for key in ("completed_steps", "total_steps"):
-        try:
-            steps = int(run_meta.get(key) or 0)
-        except (TypeError, ValueError):
-            steps = 0
-        if steps > 0:
-            return steps - 1
-    if str(run_meta.get("status") or "").lower() in {
-        "completed",
-        "stopped",
-        "stopped_by_guard",
-        "failed",
-    }:
-        try:
-            steps = int(run_meta.get("planned_total_steps") or 0)
-        except (TypeError, ValueError):
-            steps = 0
-        if steps > 0:
-            return steps - 1
-
-    max_day = -1
-    exchange_root = artifact_root / "public" / "exchange"
-    if exchange_root.exists():
-        for path in exchange_root.iterdir():
-            if not path.is_dir():
-                continue
-            match = re.match(r"^day(\d+)$", path.name)
-            if match and (path / "exchange.json").exists():
-                max_day = max(max_day, int(match.group(1)))
-    if max_day >= 0:
-        return max_day
-
-    enterprises_root = artifact_root / "enterprises"
-    if enterprises_root.exists():
-        for records_root in enterprises_root.glob("*/records"):
-            for path in records_root.iterdir() if records_root.exists() else []:
-                if not path.is_dir():
-                    continue
-                match = re.match(r"^day(\d+)$", path.name)
-                if match:
-                    max_day = max(max_day, int(match.group(1)))
-    return max_day
+    return _inspection_for_artifact(artifact_root, run_meta)["last_available_round"]
 
 
 def _last_sealed_round_from_artifact(
@@ -313,6 +296,27 @@ def _last_sealed_round_from_artifact(
     return max(candidates, default=-1)
 
 
+def _inspection_for_artifact(root, meta):
+    from persistence.review_io import ReviewReader
+    manifest = ReviewReader(root).manifest
+    if manifest.get("schema_version") == "published_results.v1" and manifest.get("inspection"):
+        return manifest["inspection"]
+    return inspect_run(root, meta)
+
+
+def _catalog_meta(meta):
+    fields = ("run_id","job_id","scenario_id","scenario_meta","experiment_design","integration_profiles",
+              "status","planned_total_steps","completed_steps","total_steps","started_at","finished_at","archived_at",
+              "orchestrator","enterprise_ids","single_enterprise_case","tags",
+              "prewarm_rounds","handoff_day","agent_takeover_round")
+    result = {key:meta[key] for key in fields if key in meta}
+    config = meta.get("scenario_config") or {}
+    injection = config.get("runtime_injection") or {}
+    result["scenario_config"] = {key:config[key] for key in ("simulation","integration_profiles","enterprise_specs","enterprise_configs","single_enterprise_case") if key in config}
+    result["scenario_config"]["runtime_injection"] = {key:injection[key] for key in ("firm_architecture_experiment","scripted_rule_policy","single_enterprise_diagnostic_policy") if key in injection}
+    return result
+
+
 def _run_catalog_entry(
     *,
     source: str,
@@ -329,6 +333,7 @@ def _run_catalog_entry(
         entry_id = f"operations_job:{meta.get('job_id') or name}"
     else:
         entry_id = name
+    inspection = _inspection_for_artifact(artifact_root, meta)
     return {
         "id": entry_id,
         "source": source,
@@ -336,7 +341,9 @@ def _run_catalog_entry(
         "source_label": name,
         "data_root": data_root,
         "resolved_run_id": meta.get("run_id") or name,
-        "meta": meta,
+        "meta": _catalog_meta(meta),
+        "available_rounds": inspection["available_rounds"],
+        "integrity": inspection,
         "max_day": _max_day_from_run_artifact(artifact_root, meta),
         "mtime": artifact_root.stat().st_mtime,
     }
@@ -351,7 +358,7 @@ def _iter_workspace_job_run_dirs(root: Path) -> List[tuple[Path, str]]:
     if not root.exists():
         return run_dirs
     for path in sorted(root.iterdir()):
-        if not path.is_dir() or path.name.startswith("_"):
+        if not path.is_dir() or path.name.startswith("_") or not is_public_artifact(path, root):
             continue
         if (path / "run_meta.json").is_file():
             run_dirs.append((path, path.name))
@@ -360,13 +367,14 @@ def _iter_workspace_job_run_dirs(root: Path) -> List[tuple[Path, str]]:
             if (
                 child.is_dir()
                 and not child.name.startswith("_")
+                and is_public_artifact(child, root)
                 and (child / "run_meta.json").is_file()
             ):
                 run_dirs.append((child, f"{path.name}/{child.name}"))
     return run_dirs
 
 
-def _artifact_run_catalog(
+def _collect_artifact_run_catalog(
     *,
     include_workspace_current: bool = True,
     include_workspace_jobs: bool = True,
@@ -378,7 +386,7 @@ def _artifact_run_catalog(
     if include_workspace_current:
         root = bases["workspace_multi"]
         meta = _read_json(root / "run_meta.json", {})
-        if isinstance(meta, dict) and meta:
+        if isinstance(meta, dict) and meta and (private_results.get() or published_member(root / "run_meta.json", root)):
             entries.append(
                 _run_catalog_entry(
                     source="workspace_multi",
@@ -404,10 +412,12 @@ def _artifact_run_catalog(
             else [
                 (path, path.name)
                 for path in sorted(root.iterdir())
-                if path.is_dir() and not path.name.startswith("_")
+                if path.is_dir() and not path.name.startswith("_") and is_public_artifact(path, root)
             ]
         )
         for path, artifact_name in run_paths:
+            if not is_public_artifact(path / "run_meta.json", root) or (not private_results.get() and not published_member(path / "run_meta.json", root)):
+                continue
             meta = _read_json(path / "run_meta.json", {})
             if not isinstance(meta, dict) or not meta:
                 continue
@@ -424,11 +434,32 @@ def _artifact_run_catalog(
     return entries
 
 
+
+_catalog_cache = {}
+
+def _artifact_run_catalog(**options):
+    import time
+    bases = tuple(sorted((name,str(path.resolve()),path.stat().st_mtime_ns if path.exists() else 0) for name,path in _artifact_bases().items()))
+    key = (bases,bool(private_results.get()),tuple(sorted(options.items())))
+    now = time.monotonic()
+    cached = _catalog_cache.get(key)
+    if cached and now-cached[0] < 2:
+        return list(cached[1])
+    entries = _collect_artifact_run_catalog(**options)
+    if len(_catalog_cache)>8: _catalog_cache.clear()
+    _catalog_cache[key] = (now,entries)
+    return list(entries)
+
+
 def _validate_artifact_root(raw_root: Path) -> Path:
     artifact_root = raw_root.expanduser().resolve()
     for base in _artifact_bases().values():
         resolved_base = base.resolve()
         if artifact_root == resolved_base or _path_is_relative_to(artifact_root, resolved_base):
+            if not is_public_artifact(artifact_root, resolved_base):
+                raise ValueError("Artifact root is not public")
+            if not private_results.get() and not published_member(artifact_root, resolved_base):
+                raise ValueError("Archive has not been published")
             if artifact_root.exists() and artifact_root.is_dir():
                 return artifact_root
             raise FileNotFoundError(str(artifact_root))
@@ -436,23 +467,44 @@ def _validate_artifact_root(raw_root: Path) -> Path:
 
 
 def _build_artifact_zip(artifact_root: Path, archive_name: Optional[str] = None) -> FileResponse:
+    from runtime.download_cache import download_gate
+    artifact_root = _validate_artifact_root(artifact_root)
+    with download_gate(artifact_root,private_results.get()):
+        return _build_artifact_zip_unlocked(artifact_root,archive_name)
+
+
+def _build_artifact_zip_unlocked(artifact_root: Path, archive_name: Optional[str] = None) -> FileResponse:
     artifact_root = _validate_artifact_root(artifact_root)
     safe_name = _safe_archive_name(archive_name or artifact_root.name)
+    manifest = artifact_root / "public_manifest.json"
+    cache_path = None
+    if manifest.is_file() and not private_results.get():
+        import hashlib
+        from config.project_paths import RUNTIME_ROOT
+        cache_root = RUNTIME_ROOT / "downloads"
+        cache_root.mkdir(parents=True,exist_ok=True)
+        cache_path = cache_root / (hashlib.sha256(manifest.read_bytes()).hexdigest() + ".zip")
+        if cache_path.is_file():
+            return FileResponse(cache_path,media_type="application/zip",filename=f"{safe_name}.zip")
     temp_file = tempfile.NamedTemporaryFile(
         prefix=f"{safe_name}_",
         suffix=".zip",
         delete=False,
+        dir=cache_path.parent if cache_path is not None else None,
     )
     temp_path = Path(temp_file.name)
     temp_file.close()
     with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(artifact_root.rglob("*")):
-            if not path.is_file():
+            if not path.is_file() or not is_public_artifact(path, artifact_root) or (not private_results.get() and path.name != "public_manifest.json" and not published_member(path, artifact_root)):
                 continue
             archive.write(
                 path,
                 arcname=str(Path(safe_name) / path.relative_to(artifact_root)),
             )
+    if cache_path is not None:
+        temp_path.replace(cache_path)
+        return FileResponse(cache_path,media_type="application/zip",filename=f"{safe_name}.zip")
     return FileResponse(
         path=temp_path,
         media_type="application/zip",
@@ -607,24 +659,26 @@ def _job_round_summary(job: Dict[str, Any]) -> Dict[str, Any]:
         "planned_total_steps": planned_total_steps,
         "last_complete_round": last_complete_round,
         "current_round_label": (
-            f"Round {int(last_complete_round) + 1}"
+            f'Round {int(last_complete_round) + 1}'
             if last_complete_round is not None and int(last_complete_round) >= 0
-            else "First round not completed"
+            else 'First round not completed'
         ),
         "artifact_root": str(artifact_root) if artifact_root else "",
         "enterprises": [],
         "total_cash": None,
         "message": "",
     }
+    if artifact_root is not None:
+        summary["firm_architecture_quality"] = _read_json(artifact_root / "firm_architecture_quality.json", {})
     if artifact_root is None:
-        summary["message"] = "The run directory has not been created yet."
+        summary["message"] = 'The run directory has not been created yet.'
         return summary
     enterprises_root = artifact_root / "enterprises"
     if last_complete_round is None or int(last_complete_round) < 0:
-        summary["message"] = "No completed round is available for summary."
+        summary["message"] = 'No completed round is available for summary.'
         return summary
     if not enterprises_root.exists():
-        summary["message"] = "The enterprise run directory was not found."
+        summary["message"] = 'The enterprise run directory was not found.'
         return summary
     round_id = int(last_complete_round)
     enterprises = [
@@ -647,6 +701,11 @@ def _scenario_payload(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     for row in rows or []:
         scenario_id = row.get("scenario_id") or row.get("value") or ""
         scenario_config = _safe_scenario_config(scenario_id)
+        if (scenario_config.get("fd_validation_instance") or {}).get("instance_sequence") == 2:
+            row = {**row, "name": scenario_config["meta"]["name"],
+                   "label": scenario_config["meta"]["name"],
+                   "summary": scenario_config["meta"]["summary"],
+                   "description": scenario_config["meta"]["summary"]}
         integration_profiles = (
             resolve_integration_profiles(scenario_config)
             if scenario_config
@@ -752,17 +811,29 @@ def _safe_scenario_config(scenario_id: str) -> Dict[str, Any]:
     if not scenario_id:
         return {}
     try:
-        return get_scenario_config(scenario_id)
+        config = get_scenario_config(scenario_id)
+        from config.fd_experiment import FD4
+        if str(scenario_id).removesuffix("_scripted") == FD4:
+            from config.fd4_validation_design import fd4_instance
+            config = fd4_instance(config)
+        return config
     except Exception:
         return {}
 
 
 def _scenario_config_defaults(scenario_config: Dict[str, Any]) -> Dict[str, Any]:
+    from config.fd_experiment import experiment_options
     simulation = (scenario_config or {}).get("simulation") or {}
     runtime_injection = (scenario_config or {}).get("runtime_injection") or {}
     scripted_policy = runtime_injection.get("scripted_rule_policy") or {}
     auto_policy = (scenario_config or {}).get("auto_policy") or {}
+    architecture = runtime_injection.get("firm_architecture_experiment") or {}
     return {
+        "firm_architecture_experiment": architecture,
+        "fd_experiment_options": [] if architecture.get("enabled") else experiment_options(
+            (runtime_injection.get("single_enterprise_case_policy") or {}).get("case_id"),
+            bool(scripted_policy.get("enabled")),
+        ),
         "simulation": {
             "agent_run_steps": simulation.get("agent_run_steps"),
             "service_total_steps": simulation.get("service_total_steps"),
@@ -806,6 +877,8 @@ def _scenario_config_defaults(scenario_config: Dict[str, Any]) -> Dict[str, Any]
                 "enabled": scripted_policy.get("enabled"),
                 "mode": scripted_policy.get("mode"),
                 "production": scripted_policy.get("production") or {},
+                "single_enterprise_rules": scripted_policy.get("single_enterprise_rules") or {},
+                "single_case": scripted_policy.get("single_case") or {},
             },
             "profit_objective_policy": runtime_injection.get(
                 "profit_objective_policy"
@@ -865,9 +938,75 @@ def create_operations_router(
     configured storage profile and SQL mirror environment variables.
     """
 
-    router = APIRouter(prefix="/operations", tags=["operations"])
+    router = APIRouter(prefix="/operations", tags=["operations"],
+                       dependencies=[Depends(enforce_platform_access), Depends(result_access_scope)])
     operations_api = api or OperationsAPI()
+    from .batch import BatchService
+    batches = BatchService(operations_api)
+
+    @router.get("/batches")
+    def list_batches():
+        if not private_results.get(): return {"ok": True, "data": []}
+        return _json_response(operations_api._capture(lambda: batches.list(reconcile=False)))
+
+    @router.get("/access")
+    def access_capabilities(request: Request):
+        return {"ok": True, "data": get_platform_access().capabilities(
+            request.headers.get("authorization", ""))}
+
+    @router.post("/batches")
+    def create_batch(request: CreateBatchRequest):
+        items = [item.model_dump(exclude_none=True) if hasattr(item, "model_dump")
+                 else item.dict(exclude_none=True) for item in request.items]
+        return _json_response(operations_api._capture(
+            lambda: batches.create(items, request.repeats, request.requested_by)))
+
+    @router.post("/batches/{batch_id}/pause")
+    def pause_batch(batch_id: str):
+        return _json_response(operations_api._capture(lambda: batches.pause(batch_id)))
+
+    @router.post("/batches/{batch_id}/resume")
+    def resume_batch(batch_id: str):
+        return _json_response(operations_api._capture(lambda: batches.resume(batch_id)))
+
     load_scenarios = scenario_catalog_loader or get_available_scenarios
+    scenario_payload_cache = None
+
+    @router.get("/artifacts/review")
+    def artifact_review(source: str, name: Optional[str] = None, enterprise: Optional[str] = None,
+                        round: Optional[int] = None, offset: int = 0, limit: int = 100, status: Optional[str] = None,
+                        start: Optional[int] = None, end: Optional[int] = None, decision_phase: str = "all"):
+        from persistence.review_projection import build_review
+        def collect():
+            root = _validate_artifact_root(_resolve_artifact_root(source, name))
+            return build_review(root, enterprise, round, max(0,offset), min(500,max(1,limit)),status,
+                                start,end,decision_phase)
+        return _json_response(operations_api._capture(collect))
+
+    @router.get("/artifacts/trend")
+    def artifact_trend(source: str, name: Optional[str] = None, enterprise: Optional[str] = None,
+                       start: Optional[int] = None, end: Optional[int] = None):
+        from persistence.review_projection import build_trend
+        def collect():
+            root = _validate_artifact_root(_resolve_artifact_root(source, name))
+            return build_trend(root, enterprise,start,end)
+        return _json_response(operations_api._capture(collect))
+
+    @router.get("/artifacts/view")
+    def artifact_view(source: str,name: Optional[str]=None,view: str="global"):
+        from persistence.review_io import ReviewReader
+        def collect():
+            if view not in {"global","operations","evolution","bullwhip"}:raise ValueError("Unknown chart view")
+            root=_validate_artifact_root(_resolve_artifact_root(source,name))
+            reader=ReviewReader(root);data=reader.projection(view)
+            relative=reader.manifest.get("review_projections",{}).get(view)
+            status=reader.states.get(relative,"not_recorded")
+            return {"availability":"available" if data is not None else status,"data":data}
+        return _json_response(operations_api._capture(collect))
+
+    @router.post("/jobs/reconcile")
+    def reconcile_jobs():
+        return _json_response(operations_api.reconcile_jobs())
 
     @router.get("/jobs")
     def list_jobs(
@@ -876,6 +1015,7 @@ def create_operations_router(
         active_only: bool = False,
         limit: Optional[int] = 100,
     ):
+        if not private_results.get(): return {"ok": True, "data": []}
         return _json_response(
             operations_api.list_jobs(
                 scenario_id=scenario_id,
@@ -887,12 +1027,14 @@ def create_operations_router(
 
     @router.get("/jobs/{job_id}")
     def get_job(job_id: str, scenario_id: Optional[str] = None):
+        if not private_results.get(): return JSONResponse(status_code=404, content={"ok": False, "message": "No published job record"})
         return _json_response(
             operations_api.get_job(job_id, scenario_id=scenario_id)
         )
 
     @router.get("/jobs/{job_id}/summary")
     def get_job_summary(job_id: str, scenario_id: Optional[str] = None):
+        if not private_results.get(): return JSONResponse(status_code=403, content={"ok": False, "message": "Use the published run summary"})
         response = operations_api.get_job(job_id, scenario_id=scenario_id)
         if not response.get("ok"):
             return _json_response(response)
@@ -903,6 +1045,7 @@ def create_operations_router(
 
     @router.get("/jobs/{job_id}/archive")
     def download_job_archive(job_id: str, scenario_id: Optional[str] = None):
+        if not private_results.get(): return JSONResponse(status_code=403, content={"ok": False, "message": "Use the published artifact archive"})
         response = operations_api.get_job(job_id, scenario_id=scenario_id)
         if not response.get("ok"):
             return _json_response(response)
@@ -952,6 +1095,7 @@ def create_operations_router(
         include_simulation_runs: bool = True,
         include_operations_jobs: bool = True,
         limit: Optional[int] = 500,
+        offset: int = 0,
     ):
         try:
             entries = _artifact_run_catalog(
@@ -959,7 +1103,7 @@ def create_operations_router(
                 include_workspace_jobs=include_workspace_jobs,
                 include_simulation_runs=include_simulation_runs,
             )
-            if include_operations_jobs:
+            if include_operations_jobs and private_results.get():
                 jobs_response = operations_api.list_jobs(limit=limit)
                 if jobs_response.get("ok"):
                     for job in jobs_response.get("data") or []:
@@ -995,12 +1139,14 @@ def create_operations_router(
                             meta.setdefault("operations_job", job)
                             meta.setdefault("job_id", job.get("job_id"))
                         workspace_name = artifact_root.name
+                        try: workspace_name = artifact_root.resolve().relative_to(WORKSPACE_JOBS_ROOT.resolve()).as_posix()
+                        except ValueError: continue
                         entries.append(
                             _run_catalog_entry(
                                 source="operations_jobs",
                                 name=workspace_name,
                                 artifact_root=artifact_root,
-                                data_root=f"/workspace_jobs/{quote(workspace_name)}",
+                                data_root=f"/workspace_jobs/{_quote_artifact_name(workspace_name)}",
                                 meta=meta,
                             )
                         )
@@ -1026,7 +1172,7 @@ def create_operations_router(
                 content={
                     "ok": True,
                     "data": {
-                        "entries": entries,
+                        "entries": entries[max(0, offset):max(0, offset) + min(1000, max(1, limit or 500))],
                         "count": len(entries),
                     },
                 },
@@ -1208,9 +1354,12 @@ def create_operations_router(
 
     @router.get("/scenarios")
     def list_scenarios():
+        nonlocal scenario_payload_cache
+        if scenario_payload_cache is None:
+            scenario_payload_cache = _scenario_payload(load_scenarios())
         return JSONResponse(
             status_code=200,
-            content={"ok": True, "data": _scenario_payload(load_scenarios())},
+            content={"ok": True, "data": scenario_payload_cache},
         )
 
     return router

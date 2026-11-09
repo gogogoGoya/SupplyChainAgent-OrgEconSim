@@ -53,3 +53,15 @@ agent/workspace/*
 agent/static_commands/*
 !agent/static_commands/single_enterprise/
 !agent/static_commands/single_enterprise/**
+
+# Local experiment exports and private diagnostics
+.local_artifacts/
+*.private.json
+
+# Reviewed publication copies and mutable runtime caches
+agent/public_results/
+agent/runtime/
+visualization/playwright-report/
+visualization/test-results/
+
+/browser-artifacts/

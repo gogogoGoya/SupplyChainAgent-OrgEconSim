@@ -1,5 +1,10 @@
+import LoadingState from './LoadingState';
+import {setReviewChart} from '../utils/chartReview';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import * as echarts from 'echarts';
+import * as echarts from '../utils/echartsRuntime';
+import {getArtifactView} from '../utils/operationsApi';
+import {reviewLocation} from '../utils/reviewDisplay';
+import {clearReadCache} from '../utils/readClient.mjs';
 import { buildDataUrl, safeFetchJson } from '../utils/dataSource';
 import {
   convertQuantityByItem,
@@ -553,7 +558,9 @@ const BullwhipEffectView = ({
   const [latestDepartmentStates, setLatestDepartmentStates] = useState(null);
   const [topUpstreamProcurementStatesByDay, setTopUpstreamProcurementStatesByDay] = useState({});
   const [loading, setLoading] = useState(true);
+  const [loadError,setLoadError]=useState('');const [reload,setReload]=useState(0);
   const requestRef = useRef(null);
+  const loadGeneration = useRef(0);
   const requestHeatmapRef = useRef(null);
   const orderHeatmapRef = useRef(null);
   const transmissionRef = useRef(null);
@@ -567,8 +574,10 @@ const BullwhipEffectView = ({
   const flowModels = useMemo(() => buildFlowModels(bullwhip?.flow_sequence, enterpriseSpecs), [bullwhip, enterpriseSpecs]);
 
   useEffect(() => {
-    loadBullwhipData();
-  }, [availableDays.join(','), dataRoot, quantityView, enterpriseSpecs]);
+    const generation = ++loadGeneration.current;
+    loadBullwhipData(generation).catch(error=>{if(generation===loadGeneration.current){setLoadError(error.message);setLoading(false);}});
+    return () => {loadGeneration.current += 1;};
+  }, [availableDays.join(','), dataRoot, quantityView, enterpriseSpecs,reload]);
 
   useEffect(() => {
     renderCharts();
@@ -581,6 +590,7 @@ const BullwhipEffectView = ({
       window.removeEventListener('resize', handleResize);
     };
   }, [
+    loading,
     bullwhip,
     externalDemand,
     exchangeSnapshot,
@@ -598,17 +608,23 @@ const BullwhipEffectView = ({
     chartRefs.current = [];
   }, []);
 
-  const loadBullwhipData = async () => {
-    setLoading(true);
+  const loadBullwhipData = async (generation) => {
+    setLoading(true);setLoadError('');
+    const {source,name}=reviewLocation(dataRoot);const projected=await getArtifactView(source,name,'bullwhip',{forceRefresh:reload>0});
+    if(projected.error&&projected.status!==404)throw new Error(projected.error);
+    if(projected.data&&!['available','not_recorded','not_published'].includes(projected.data.availability))throw new Error('Bullwhip evidence is invalid or changed. Republish this archive.');
+    const files=projected.data?.availability==='available'?projected.data.data?.files:null;
+    const read=url=>files?Promise.resolve(files[url.slice(dataRoot.replace(/\/$/,'').length+1)]??null):safeFetchJson(url);
+
 
     const [
       bullwhipData,
       externalData,
       exchangeData
     ] = await Promise.all([
-      safeFetchJson(buildDataUrl(dataRoot, `public/exchange/day${latestDay}/bullwhip_metrics.json`)),
-      safeFetchJson(buildDataUrl(dataRoot, `public/exchange/day${latestDay}/external_demand.json`)),
-      safeFetchJson(buildDataUrl(dataRoot, `public/exchange/day${latestDay}/exchange.json`))
+      read(buildDataUrl(dataRoot, `public/exchange/day${latestDay}/bullwhip_metrics.json`)),
+      read(buildDataUrl(dataRoot, `public/exchange/day${latestDay}/external_demand.json`)),
+      read(buildDataUrl(dataRoot, `public/exchange/day${latestDay}/exchange.json`))
     ]);
     const bullwhipPayload = bullwhipData?.data || null;
     const runtimeFlowModels = buildFlowModels(bullwhipPayload?.flow_sequence);
@@ -622,13 +638,13 @@ const BullwhipEffectView = ({
     const procurementEntries = await Promise.all(
       enterpriseIds.map(async (enterpriseId) => ([
         enterpriseId,
-        await safeFetchJson(buildDataUrl(dataRoot, `enterprises/${enterpriseId}/department/procurement/day${latestDay}/procurement.json`))
+        await read(buildDataUrl(dataRoot, `enterprises/${enterpriseId}/department/procurement/day${latestDay}/procurement.json`))
       ]))
     );
     const salesEntries = await Promise.all(
       enterpriseIds.map(async (enterpriseId) => ([
         enterpriseId,
-        await safeFetchJson(buildDataUrl(dataRoot, `enterprises/${enterpriseId}/department/sales/day${latestDay}/sales.json`))
+        await read(buildDataUrl(dataRoot, `enterprises/${enterpriseId}/department/sales/day${latestDay}/sales.json`))
       ]))
     );
     const procurementByEnterprise = Object.fromEntries(
@@ -640,25 +656,26 @@ const BullwhipEffectView = ({
 
     const rows = [];
     const topUpstreamProcurementStates = {};
-    for (const day of availableDays) {
+    const roundRows = await Promise.all(availableDays.map(async (day) => {
       const fallbackEnterpriseIds = enterpriseSpecs.map((spec) => spec.enterprise_id || spec.id).filter(Boolean);
       const dayRows = await Promise.all((enterpriseIds.length > 0 ? enterpriseIds : fallbackEnterpriseIds).map(async (company) => {
-        const data = await safeFetchJson(buildDataUrl(dataRoot, `public/observer_state/day${day}/end_of_day/${company}.json`));
+        const data = await read(buildDataUrl(dataRoot, `public/observer_state/day${day}/end_of_day/${company}.json`));
         return {
           day,
           company,
           observation: data?.observation || {}
         };
       }));
-      rows.push(...dayRows);
-    }
+      return dayRows;
+    }));
+    rows.push(...roundRows.flat());
     const bottomEnterpriseId = runtimeFlowModels.customerFlow?.upstream_enterprise_id;
     const topUpstreamEnterpriseId = getTopInternalFlow(runtimeFlowModels.edgeLayers)?.upstreamEnterpriseId;
     if (topUpstreamEnterpriseId) {
       const dailyProcurementEntries = await Promise.all(
         availableDays.map(async (day) => ([
           day,
-          await safeFetchJson(buildDataUrl(dataRoot, `enterprises/${topUpstreamEnterpriseId}/department/procurement/day${day}/procurement.json`))
+          await read(buildDataUrl(dataRoot, `enterprises/${topUpstreamEnterpriseId}/department/procurement/day${day}/procurement.json`))
         ]))
       );
       dailyProcurementEntries.forEach(([day, payload]) => {
@@ -666,6 +683,7 @@ const BullwhipEffectView = ({
       });
     }
 
+    if (generation !== loadGeneration.current) return;
     setBullwhip(bullwhipPayload);
     setExternalDemand(externalData?.data || null);
     setExchangeSnapshot(exchangeData || null);
@@ -1072,7 +1090,7 @@ const BullwhipEffectView = ({
   );
 
   const renderCharts = () => {
-    if (!bullwhip || observerRows.length === 0) {
+    if (loading||!requestRef.current||!bullwhip || observerRows.length === 0) {
       return;
     }
 
@@ -1097,7 +1115,7 @@ const BullwhipEffectView = ({
         ? 'Relative to Own Peak (%)'
         : getQuantityAxisLabel('Demand / Request Quantity', quantityView);
 
-    chart.setOption({
+    setReviewChart(chart, {
       tooltip: {
         trigger: 'axis',
         formatter: (params) => {
@@ -1121,7 +1139,7 @@ const BullwhipEffectView = ({
       },
       legend: { type: 'scroll', bottom: 0 },
       grid: { left: 44, right: 20, top: 24, bottom: 54 },
-      xAxis: { type: 'category', data: availableDays.map((day) => `Turn ${day}`) },
+      xAxis: { type: 'category', data: availableDays.map((day) => `Round ${day}`) },
       yAxis: {
         type: 'value',
         name: yAxisName,
@@ -1155,18 +1173,18 @@ const BullwhipEffectView = ({
     const chart = echarts.init(targetRef.current);
     chartRefs.current.push(chart);
 
-    chart.setOption({
+    setReviewChart(chart, {
       tooltip: {
         position: 'top',
         formatter: (params) => {
           const [dayIndex, layerIndex, value] = params.data;
-          return `Turn ${availableDays[dayIndex]}<br/>${titleSeries[layerIndex].name}<br/>${name}: ${formatRatio(value)}`;
+          return `Round ${availableDays[dayIndex]}<br/>${titleSeries[layerIndex].name}<br/>${name}: ${formatRatio(value)}`;
         }
       },
       grid: { left: 92, right: 56, top: 18, bottom: 52 },
       xAxis: {
         type: 'category',
-        data: availableDays.map((day) => `Turn ${day}`),
+        data: availableDays.map((day) => `Round ${day}`),
         splitArea: { show: true }
       },
       yAxis: {
@@ -1249,7 +1267,7 @@ const BullwhipEffectView = ({
     ];
     const maxRatio = Math.max(...transmissionTotals.map((entry) => Number(entry.value || 0)), 1);
 
-    chart.setOption({
+    setReviewChart(chart, {
       tooltip: {
         trigger: 'item',
         formatter: (params) => {
@@ -1320,7 +1338,7 @@ const BullwhipEffectView = ({
     const chart = echarts.init(conversionRef.current);
     chartRefs.current.push(chart);
 
-    chart.setOption({
+    setReviewChart(chart, {
       tooltip: { trigger: 'axis' },
       legend: { type: 'scroll', bottom: 0 },
       grid: { left: 52, right: 20, top: 24, bottom: 54 },
@@ -1377,13 +1395,13 @@ const BullwhipEffectView = ({
     const chart = echarts.init(responseRef.current);
     chartRefs.current.push(chart);
 
-    chart.setOption({
+    setReviewChart(chart, {
       tooltip: { trigger: 'axis' },
       legend: { type: 'scroll', bottom: 0 },
       grid: { left: 52, right: 62, top: 24, bottom: 56 },
       xAxis: {
         type: 'category',
-        data: availableDays.map((day) => `Turn ${day}`)
+        data: availableDays.map((day) => `Round ${day}`)
       },
       yAxis: [
         {
@@ -1427,11 +1445,11 @@ const BullwhipEffectView = ({
     const chart = echarts.init(gapRef.current);
     chartRefs.current.push(chart);
 
-    chart.setOption({
+    setReviewChart(chart, {
       tooltip: { trigger: 'axis' },
       legend: { type: 'scroll', bottom: 0 },
       grid: { left: 44, right: 20, top: 24, bottom: 54 },
-      xAxis: { type: 'category', data: availableDays.map((day) => `Turn ${day}`) },
+      xAxis: { type: 'category', data: availableDays.map((day) => `Round ${day}`) },
       yAxis: { type: 'value', name: getQuantityAxisLabel('Demand-Order Gap', quantityView) },
       series: flowModels.edgeLayers.map((entry) => ({
         name: `${entry.name} Gap`,
@@ -1476,11 +1494,11 @@ const BullwhipEffectView = ({
       return getRawMaterialEquivalentInventory(row?.observation, quantityView);
     });
 
-    chart.setOption({
+    setReviewChart(chart, {
       tooltip: { trigger: 'axis' },
       legend: { type: 'scroll', bottom: 0 },
       grid: { left: 44, right: 20, top: 24, bottom: 54 },
-      xAxis: { type: 'category', data: availableDays.map((day) => `Turn ${day}`) },
+      xAxis: { type: 'category', data: availableDays.map((day) => `Round ${day}`) },
       yAxis: { type: 'value', name: getQuantityAxisLabel('Inventory', quantityView) },
       series: [
         ...finishedGoodsSeries,
@@ -1612,8 +1630,9 @@ const BullwhipEffectView = ({
       ? 'No top-tier external procurement orders were recorded, so no external upstream order series is shown.'
       : '';
 
+  if(loadError)return <section className="view-error" role="alert"><h3>Bullwhip review unavailable</h3><p>{loadError}</p><button onClick={()=>{clearReadCache();setReload(v=>v+1);}}>Retry bullwhip review</button></section>;
   if (loading) {
-    return <div className="loading">Loading bullwhip-effect data...</div>;
+    return <LoadingState label="Loading bullwhip-effect data…" variant="chart"/>;
   }
 
   if (!bullwhip) {
@@ -1633,7 +1652,7 @@ const BullwhipEffectView = ({
         </div>
         <div className="bullwhip-kpi-card warning">
           <span>Peak Request-Amplification Tier</span>
-          <strong>{peakDemandAmplification.layerName === '-' ? '-' : `${peakDemandAmplification.layerName} · Turn ${peakDemandAmplification.day}`}</strong>
+          <strong>{peakDemandAmplification.layerName === '-' ? '-' : `${peakDemandAmplification.layerName} · Round ${peakDemandAmplification.day}`}</strong>
         </div>
         <div className="bullwhip-kpi-card warning">
           <span>Maximum Static BWE</span>
@@ -1723,12 +1742,12 @@ const BullwhipEffectView = ({
         </div>
 
         <div className="bullwhip-chart-card">
-          <div className="bullwhip-card-title">Per-Turn Request-Amplification Heatmap</div>
+          <div className="bullwhip-card-title">Per-Round Request-Amplification Heatmap</div>
           <div className="bullwhip-chart" ref={requestHeatmapRef} />
         </div>
 
         <div className="bullwhip-chart-card">
-          <div className="bullwhip-card-title">Per-Turn Order-Amplification Heatmap</div>
+          <div className="bullwhip-card-title">Per-Round Order-Amplification Heatmap</div>
           <div className="bullwhip-chart" ref={orderHeatmapRef} />
         </div>
 
@@ -1802,7 +1821,7 @@ const BullwhipEffectView = ({
 
         <div className="bullwhip-chart-card">
           <div className="bullwhip-card-title">
-            {quantityView?.enabled ? `Per-Turn Demand–Order Gap (${quantityView.productId} Equivalent)` : 'Per-Turn Demand–Order Gap'}
+            {quantityView?.enabled ? `Per-Round Demand–Order Gap (${quantityView.productId} Equivalent)` : 'Per-Round Demand–Order Gap'}
           </div>
           <div className="bullwhip-chart" ref={gapRef} />
         </div>
@@ -1817,12 +1836,12 @@ const BullwhipEffectView = ({
         <div className="bullwhip-chart-card insight-card wide">
           <div className="bullwhip-card-title">Bullwhip-Effect Findings</div>
           <ul>
-            <li>Request amplification peaks at {peakDemandAmplification.layerName === '-' ? '-' : `${peakDemandAmplification.layerName}, Turn ${peakDemandAmplification.day}`} with {formatRatio(peakDemandAmplification.value)}; order amplification peaks at {peakOrderAmplification.layerName === '-' ? '-' : `${peakOrderAmplification.layerName}, Turn ${peakOrderAmplification.day}`} with {formatRatio(peakOrderAmplification.value)}.</li>
+            <li>Request amplification peaks at {peakDemandAmplification.layerName === '-' ? '-' : `${peakDemandAmplification.layerName}, Round ${peakDemandAmplification.day}`} with {formatRatio(peakDemandAmplification.value)}; order amplification peaks at {peakOrderAmplification.layerName === '-' ? '-' : `${peakOrderAmplification.layerName}, Round ${peakOrderAmplification.day}`} with {formatRatio(peakOrderAmplification.value)}.</li>
             <li>The inter-tier transmission chart compares cumulative requests and labels deviations from `1x`. When {transmissionSummaryText}, the chain exhibits amplification, attenuation, and renewed upstream amplification across successive tiers.</li>
             <li>Maximum static BWE is {formatRatio(maxStaticBwe)}, and maximum static CV-BWE is {formatRatio(maxStaticCvBwe)}. Together they summarize request variability relative to terminal demand.</li>
             <li>Cumulative quantities are: requests {formatNumber(totalRequestQuantity)}, proposals {formatNumber(conversionRows.reduce((sum, row) => sum + row.proposalTotal, 0))}, accepted proposals {formatNumber(totalAcceptedProposalQuantity)}, confirmed proposals {formatNumber(totalConfirmedProposalQuantity)}, orders {formatNumber(totalOrderQuantity)}, and arrivals/deliveries {formatNumber(totalArrivedQuantity)}.</li>
             <li>The weakest request-to-order conversion occurs at {weakestConversion ? `${weakestConversion.layerName} (${formatPercent(weakestConversion.ratio)})` : '-'}. Strong request amplification paired with a narrowing funnel indicates that trading or fulfillment attenuates behavioral demand amplification.</li>
-            <li>The first turn with first-tier amplification of at least 2x is {firstRetailerAmplifiedDay === null ? 'not observed' : `Turn ${firstRetailerAmplifiedDay}`}. Ending chain-wide backlog is {formatNumber(totalBacklog)}; peak backlog occurs at {peakBacklog.company === '-' ? '-' : `${peakBacklog.company}, Turn ${peakBacklog.day}`} with {formatNumber(peakBacklog.value)}. The lowest ending fill rate is {lowestFillRate ? `${lowestFillRate.company} · ${formatPercent(lowestFillRate.value)}` : '-'}.</li>
+            <li>The first turn with first-tier amplification of at least 2x is {firstRetailerAmplifiedDay === null ? 'not observed' : `Round ${firstRetailerAmplifiedDay}`}. Ending chain-wide backlog is {formatNumber(totalBacklog)}; peak backlog occurs at {peakBacklog.company === '-' ? '-' : `${peakBacklog.company}, Round ${peakBacklog.day}`} with {formatNumber(peakBacklog.value)}. The lowest ending fill rate is {lowestFillRate ? `${lowestFillRate.company} · ${formatPercent(lowestFillRate.value)}` : '-'}.</li>
             <li>Ending beer inventory is {formatNumber(bottomFinishedGoodsInventory)} at {bottomEnterpriseName} and {formatNumber(manufacturingFinishedGoodsInventory)} at {manufacturingEnterpriseName}. Raw-material inventory at {manufacturingEnterpriseName} is {formatNumber(manufacturingRawEquivalent)}{quantityView?.enabled ? ` (${quantityView.productId} equivalent)` : ''}. Simultaneous downstream and raw-material depletion signals a supply bottleneck.</li>
             <li>The view combines dual-series metrics from `bullwhip_metrics.json` with exchange requests, proposals, orders, procurement arrivals, and sales fulfillment to distinguish amplification, attenuation, and operating consequences.</li>
           </ul>

@@ -1,3 +1,4 @@
+import LoadingState from './LoadingState';
 import React, { useEffect, useState } from 'react';
 import { buildDataUrl, safeFetchJson } from '../utils/dataSource';
 
@@ -24,7 +25,7 @@ const formatNumber = (value) => {
   }).format(numeric);
 };
 
-const formatMoney = (value) => `¥${formatNumber(value)}`;
+const formatMoney = (value) => `SCU ${formatNumber(value)}`;
 
 const formatValue = (value) => {
   if (value === null || value === undefined || value === '') {
@@ -278,7 +279,7 @@ const ExchangeEnterprisePanel = ({ day, coreCompany, dataRoot }) => {
   };
 
   if (loading) {
-    return <div className="loading">Loading...</div>;
+    return <LoadingState label="Loading trading partners…" variant="compact"/>;
   }
 
   if (error) {

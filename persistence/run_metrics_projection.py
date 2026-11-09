@@ -697,6 +697,7 @@ class RunMetricsProjectionBuilder:
                 {},
             )
         )
+        architecture_quality = _safe_dict(self.read_json(workspace_dir / "firm_architecture_quality.json", {}))
         totals = _safe_dict(round_integrity.get("totals"))
         enterprise_ids = [
             str(item)
@@ -817,6 +818,23 @@ class RunMetricsProjectionBuilder:
                 )
             ),
         }
+        if experiment_group in {"MA", "SA", "NA", "NC"}:
+            architecture_policy = _safe_dict(runtime_injection.get("firm_architecture_experiment"))
+            group_specific_gate_results.update(
+                architecture_protocol_labeled=bool(architecture_policy.get("enabled") and architecture_policy.get("version")),
+                phase_records_complete=round_integrity.get("ok") is True,
+                failures_retained_in_evaluation=architecture_policy.get("failure_policy") == "record_and_continue",
+            )
+            if architecture_policy.get("baseline_group") == "C3":
+                from config.firm_architecture_experiment import economic_contract, load_baseline
+                try:
+                    baseline, provenance = load_baseline(architecture_policy["family"])
+                    group_specific_gate_results["baseline_regime_matched"] = (
+                        architecture_policy.get("baseline") == provenance
+                        and economic_contract(scenario_config) == economic_contract(baseline)
+                    )
+                except (KeyError, OSError, ValueError):
+                    group_specific_gate_results["baseline_regime_matched"] = False
         external_demand = _safe_dict(
             self.read_json(
                 workspace_dir
@@ -878,6 +896,8 @@ class RunMetricsProjectionBuilder:
             "round_integrity": {
                 "available": bool(round_integrity),
                 "ok": round_integrity.get("ok"),
+                **({"decision_quality_ok": round_integrity.get("decision_quality_ok")}
+                   if experiment_group in {"MA", "SA", "NA", "NC"} else {}),
                 "totals": totals,
                 "quality_breakdown": {
                     "error_files": totals.get("error_files", 0),
@@ -896,6 +916,7 @@ class RunMetricsProjectionBuilder:
                     "strict_gate_note": "Formal clean samples should still require round_integrity.ok == true.",
                 },
             },
+            "firm_architecture_quality": architecture_quality,
             "experiment_design": experiment_design,
             "decision_regime": decision_regime,
             "agent_objective_profile": (
@@ -944,6 +965,12 @@ class RunMetricsProjectionBuilder:
                     group_specific_gate_results.get(gate) is True
                     for gate in metric_contract.get("group_specific_gates", [])
                 ),
+                **({"architecture_decision_quality_ok": (
+                    round_integrity.get("decision_quality_ok") is True
+                    and architecture_quality.get("schema_version") == "firm_architecture_quality.v1"
+                    and architecture_quality.get("unavailable_phases") == 0
+                    and architecture_quality.get("technical_no_submission_phases") == 0
+                )} if experiment_group in {"MA", "SA", "NA", "NC"} else {}),
             },
             "cobweb_metrics": cobweb_metrics,
             "enterprise_metrics": enterprise_metrics,

@@ -83,3 +83,7 @@ def project_relative_path(value: PathLike) -> str:
         return str(path.relative_to(PROJECT_ROOT))
     except ValueError:
         return str(path)
+
+# Public copies and mutable runtime files have explicit deployment roots.
+PUBLIC_RESULTS_ROOT = Path(os.getenv("SUPPLY_CHAIN_PUBLIC_RESULTS_ROOT", str(AGENT_ROOT / "public_results"))).expanduser().resolve()
+RUNTIME_ROOT = Path(os.getenv("SUPPLY_CHAIN_RUNTIME_ROOT", str(AGENT_ROOT / "runtime"))).expanduser().resolve()

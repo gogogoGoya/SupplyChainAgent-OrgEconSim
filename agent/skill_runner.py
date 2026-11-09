@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import aclosing
 import ast
+import hashlib
 import json
 import math
 import re
@@ -24,8 +26,20 @@ from agent.SessionRegistry import SessionRegistry
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config.environment_config import EnvironmentConfig
+from config.fd_ablation_experiment import VERSION as FD_ABLATION_VERSION
 from config.integration_profiles import resolve_integration_profiles
 from config.simulation_preset_config import get_active_scenario_id
+from config.fd_experiment import (
+    FD4_WORKLOAD_REFERENCE_VERSIONS, FD4_ROLE_CONTRACT_VERSIONS, FD4_COMPLETION_VERSIONS, FD4_REFERENCE_VERSIONS,
+    FD4_DECISION_CHECK_VERSIONS, FD4_AGENT_PROMPT_VERSION,
+    fd2_agent_policy, fd_completion_enabled, fd2_fact_audit_policy,
+)
+from core.fd_decision_evidence import validate_fd4_decision
+from core.fd2_fact_audit import fd2_fact_warnings
+from core.model_failure import (
+    FatalModelError, attach_model_failure, check_model_message, classify_model_failure,
+)
+from core.fd_forward_evidence import describe_forward_evidence
 from core.skill_protocol import (
     SkillExecutionAudit,
     adapt_legacy_actions,
@@ -33,6 +47,13 @@ from core.skill_protocol import (
     audit_context_files,
 )
 from coordination.semantic_rule_packs import describe_source_routes
+from agent.fd_experiment_runtime import (
+    read_policy, materialize_coordination_input, configure_input_access, procurement_guidance,
+    FDInputLoopError, fd_input_retry_context, FD_INPUT_ACCESS_VERSION,
+    accessed_inputs, input_access_prompt, fd4_decision_guidance, output_access_evidence,
+    compact_fd_input, materialize_fd_department_inputs, project_fd4_decision_evidence,
+    project_fd2_decision_evidence, fd2_decision_guidance,
+)
 
 @dataclass
 class SkillRunSpec:
@@ -712,6 +733,8 @@ class SkillRunner:
         )
 
     def _communication_enabled(self) -> bool:
+        if read_policy(self.workspace_dir).get("condition") == "no_shared_coordination":
+            return False
         profile = self._coordination_profile()
         return bool(
             profile.get("blackboard_enabled")
@@ -1629,6 +1652,21 @@ Cobweb open-profit-objective analysis constraints:
                 ),
                 "priority_rules": enterprise_policy.get("priority_rules") or [],
             }
+        if read_policy(self.workspace_dir, round_id):
+            policy = read_policy(self.workspace_dir, round_id)
+            autonomous = (policy.get("agent_prompt_policy_version") in {FD4_AGENT_PROMPT_VERSION, FD_ABLATION_VERSION}
+                          or fd2_agent_policy(policy))
+            compact = compact_fd_input(compact, preserve_active_records=autonomous)
+            if autonomous:
+                compact = {"fd_forward_evidence": describe_forward_evidence(compact, round_id), **compact}
+            compact = project_fd4_decision_evidence(
+                compact, self.workspace_dir, round_id,
+            )
+            compact = project_fd2_decision_evidence(compact, self.workspace_dir, round_id)
+            compact["fd_input_projection"] = {
+                "schema_version": "fd_bounded_input.v1", "recent_history_items": 4,
+                "all_open_records_retained": True,
+            }
         MultiTenantUtils._write_json(target_path, compact)
         return target_path
 
@@ -1743,7 +1781,7 @@ Cobweb open-profit-objective analysis constraints:
         return summary
 
     def _claude_stderr_tail(self, role: str, max_lines: int = 8) -> List[str]:
-        log_dir = self.client_dir / "logs"
+        log_dir = self.client_dir.parent / "logs"
         if not log_dir.exists():
             return []
         paths = sorted(
@@ -1804,27 +1842,17 @@ Cobweb open-profit-objective analysis constraints:
         if not policy:
             return ""
 
-        return f"""
-
-Enterprise capability-diagnosis runtime rules:
-- The current run is an enterprise Agent diagnosis. Diagnose only from runtime enterprise data.
-- These rules apply only to the current diagnosis run; they are not part of the generic Analyst Skill and do not apply to multi-enterprise scenarios.
-- Use the same comprehensive diagnostic framework for every case. Do not alter the analysis path using internal experiment metadata, preset answers, or department priority.
-- Do not cite experiment metadata absent from observation, charts_data_export, history_projection, or department state in enterprise_summarys, department_targets, or reason.
-- When charts_data_export.json or history_projection.json is supplied, first locate bottlenecks through fulfillment coverage, material coverage, warehouse pressure, cash pressure, demand-capacity gaps, order funnel, and history trends; then verify action feasibility against observation and department state.
-- Do not apply multi-enterprise links, inter-enterprise trades, peer aggregates, shared-resource governance, or cobweb-reproduction requirements unless observation explicitly enables them.
-- Inspect in this order: market and real demand; order funnel and fulfillment aging; production plans, capacity, and lines; material inventory position and inbound replenishment; suppliers and procurement budget; staffing availability, utilization, and pending recruitment; cash, net profit, revenue/cost changes, and collections; inventory and warehouse pressure.
-- If capacity_expansion_signal shows should_prioritize_build_line_review=true, treat it as primary evidence. Check recent utilization and available capacity, current total capacity, lines under construction, orders or low inventory, cash, and staff. Then explicitly prioritize evaluation of build_production_line in department_targets.production.
-- enterprise_summarys must identify the leading one to three operating constraints and their causal links, such as weak demand reducing order inflow, insufficient materials limiting schedules, capacity or staffing blocking fulfillment, or cash limiting spending.
-- Each department target must reflect its actual state and function. Provide an executable objective when a valid candidate exists; otherwise give a state-specific reason.
-- Sales: use real orders, demand, value, deadlines, market coverage, inventory or near-term output, and cash effects to decide market development, order acceptance/rejection, or no action. Orders with quantity<=0 or total_amount<=0 are invalid placeholders.
-- Procurement: decide from MATERIAL_1 inventory position, recipe demand, orders/backlog, suppliers, inbound replenishment, budget, and lead time. Only open pending, in_transit, or ordered purchases and real incoming quantities count as coverage; historical received orders do not.
-- Distinguish the first recovery purchase from rolling replenishment. When critical on_hand or inventory_position is low, accepted orders/backlog or near-term production exists, and no open inbound coverage exists, prioritize the earliest feasible arrival; optimize replenishment cost after recovery stabilizes.
-- Production: decide scheduling or line expansion from real orders/backlog, material-feasible quantity, idle capacity, line status, and available production staff; identify any missing hard prerequisite.
-- HR: decide recruitment from employee count, availability, utilization, pending recruitment, and prior staffing failures, not from scenario labels.
-- Finance and Inventory: determine whether cash, net profit, revenue/cost trends, inventory occupation, warehouse capacity, or fulfillment risk belongs in the enterprise summary.
-- Preserve department_targets.sales, department_targets.procurement, department_targets.production, and department_targets.hr. If a department takes no action, give a reason grounded in that department's state.
-""".rstrip()
+        extra = procurement_guidance() if read_policy(self.workspace_dir).get("scenario") == "FD2" else ""
+        if read_policy(self.workspace_dir):
+            extra += """
+Output contract: department_targets must contain sales, procurement, production and hr objects, each with target, evaluation and reason. Include HR based on real staffing even when no hiring is needed. Set round_id to the current integer round and enterprise_name to this enterprise.
+"""
+            extra += (
+                """
+After reading, proceed immediately. Read observation, charts and history once each. The bounded observation retains all open records and only counts plus four recent historical records. Do not read raw department archives or raw observations: they are outside the analyst permission scope. Reuse complete successful reads; only request an unread range with explicit offset/limit if crucial content was truncated. Read requires file_path. Do not loop on missing, denied or duplicate reads. Complete the four department targets, Write to the exact absolute output path, then Read it back. State insufficient evidence in reason and give conditional rather than invented targets.
+"""
+            )
+        return extra + f'\n\nSingle-enterprise diagnostic mode:\nUse runtime business evidence only and the same diagnostic framework for all cases. These rules do not apply to multi-enterprise runs. Do not cite internal experiment metadata, preset answers, department priorities or expected conclusions in enterprise_summarys, department_targets or reason. Identify real workload, net demand, resource constraints and feasible actions from observation, charts, history and authorized department facts.\n'.rstrip()
 
     def _build_single_enterprise_department_decision_prompt(self, role: str) -> str:
         policy = self._single_enterprise_case_policy_for_prompt()
@@ -1837,54 +1865,62 @@ Enterprise capability-diagnosis runtime rules:
 
         lines = [
             "",
-            "Single-enterprise S0 phased department decision guidance:",
-            "- This guidance applies only to the current single-enterprise Agent diagnostic run; do not transfer it to multi-enterprise decisions.",
-            "- Do not cite experimental metadata in action_reason unless it is supported by department state, blackboard, or analysis evidence, and do not claim knowledge of the current experiment type.",
+            'Single-enterprise S0 phased department decision guidance:',
+            '- This guidance applies only to the current single-enterprise Agent diagnostic run; do not transfer it to multi-enterprise decisions.',
+            '- Do not cite experimental metadata in action_reason unless it is supported by department state, blackboard, or analysis evidence, and do not claim knowledge of the current experiment type.',
             "- Decide whether to act only from this department's state, blackboard and analysis evidence, action templates, and feasibility constraints.",
         ]
 
         if role_key == "procurement":
             lines.extend([
-                "- If the inventory position, confirmed inbound replenishment, and supplier coverage for MATERIAL_1 or another critical input cannot support accepted orders, backlog, or near-term production, create the necessary purchases. Multiple non-conflicting procurement actions may be returned in one JSON document.",
-                "- If self_state.supplier_candidates or materials_suppliers_matrix contains unregistered candidates, compare unit price, minimum order quantity, processing_time, reliability_score, and logistics transit_time. supplier_name must be an actual candidate name. The first valid purchase establishes the relationship; do not invent a separate registration action.",
-                "- Add supplier processing time and logistics transit time to estimate arrival. First retain combinations that can meet the earliest unmet production or fulfillment deadline, then compare landed cost and reliability among feasible combinations.",
-                "- Select logistics by actual urgency: road has base cost 100, unit cost 2, and 3-day transit; rail has base cost 200, unit cost 1.5, and 2-day transit; air has base cost 500, unit cost 5, and 1-day transit. Prefer the fastest feasible combination when raw material is zero, inventory position is negative, or the first recovery purchase affects near-term production or fulfillment; use rail for a moderate gap and road only for routine replenishment.",
-                "- Do not treat the historical total of received purchase orders as current coverage. Only open orders in replenishment.pending_by_material, operational_summary.incoming, or orders with pending/ordered/in_transit/confirmed/created status prevent duplicate purchasing.",
-                "- Do not reorder when open inbound supply covers the current gap. Reorder when production has reduced inventory position to zero or below and open inbound supply is insufficient, even if earlier purchases succeeded.",
-                "- When agent_decision_brief.procurement_recovery_signal exists, prioritize its recovery_stage, recommended_urgency, incoming_or_open_order_quantity, supplier_option_ranking, and suggested_quantity_band when deciding whether and how much to purchase and which supplier and logistics mode to use.",
-                "- Expected arrival must matter within the visible order, backlog, or near-term production window. If slow transport arrives too late, choose a faster feasible option or use action_pass when the purchase would have no operational effect.",
-                "- Purchase quantity must be justified by inventory position, bill-of-material requirements, orders or backlog, or production-recovery needs.",
+                '- If the inventory position, confirmed inbound replenishment, and supplier coverage for MATERIAL_1 or another critical input cannot support accepted orders, backlog, or near-term production, create the necessary purchases. Multiple non-conflicting procurement actions may be returned in one JSON document.',
+                '- If self_state.supplier_candidates or materials_suppliers_matrix contains unregistered candidates, compare unit price, minimum order quantity, processing_time, reliability_score, and logistics transit_time. supplier_name must be an actual candidate name. The first valid purchase establishes the relationship; do not invent a separate registration action.',
+                '- Add supplier processing time and logistics transit time to estimate arrival. First retain combinations that can meet the earliest unmet production or fulfillment deadline, then compare landed cost and reliability among feasible combinations.',
+                '- Select logistics by actual urgency: road has base cost 100, unit cost 2, and 3-day transit; rail has base cost 200, unit cost 1.5, and 2-day transit; air has base cost 500, unit cost 5, and 1-day transit. Prefer the fastest feasible combination when raw material is zero, inventory position is negative, or the first recovery purchase affects near-term production or fulfillment; use rail for a moderate gap and road only for routine replenishment.',
+                '- Do not treat the historical total of received purchase orders as current coverage. Only open orders in replenishment.pending_by_material, operational_summary.incoming, or orders with pending/ordered/in_transit/confirmed/created status prevent duplicate purchasing.',
+                '- Do not reorder when open inbound supply covers the current gap. Reorder when production has reduced inventory position to zero or below and open inbound supply is insufficient, even if earlier purchases succeeded.',
+                '- When agent_decision_brief.procurement_recovery_signal exists, prioritize its recovery_stage, recommended_urgency, incoming_or_open_order_quantity, supplier_option_ranking, and suggested_quantity_band when deciding whether and how much to purchase and which supplier and logistics mode to use.',
+                '- Expected arrival must matter within the visible order, backlog, or near-term production window. If slow transport arrives too late, choose a faster feasible option or use action_pass when the purchase would have no operational effect.',
+                '- Purchase quantity must be justified by inventory position, bill-of-material requirements, orders or backlog, or production-recovery needs.',
             ])
         elif role_key == "production":
             lines.extend([
-                "- If agent_decision_brief.capacity_expansion_signal.should_prioritize_build_line_review=true, first check the build_production_line template and return one executable expansion action. Use action_pass only when a line is already under construction, cash or staffing imposes a hard constraint, or the signal conflicts with live state evidence.",
-                "- Base expansion review on capacity_expansion_signal.evidence.recent_utilization_percent and recent_available_capacity over recent rounds, together with current total_capacity and available_capacity. Do not attempt only create_production_plan when utilization remains high, available capacity is zero, or total capacity is very low.",
-                "- When real orders or backlog exist and materials, production staffing, and idle capacity are feasible, prioritize a bounded PRODUCT_1 production plan.",
-                "- When no line is idle or available, finished-goods inventory is below its low-stock threshold, cannot cover real orders or backlog, or is clearly below the safety buffer, and cash and staffing impose no hard constraint, prioritize build_production_line review.",
-                "- Do not expand again when a line is already under construction, capacity is available, or the binding constraint is material, staffing, or cash. Expansion parameters must use only fields allowed by the template.",
-                "- If materials, staffing, or capacity has a hard shortfall, use action_pass and identify the blocking values in reason.",
+                '- If agent_decision_brief.capacity_expansion_signal.should_prioritize_build_line_review=true, first check the build_production_line template and return one executable expansion action. Use action_pass only when a line is already under construction, cash or staffing imposes a hard constraint, or the signal conflicts with live state evidence.',
+                '- Base expansion review on capacity_expansion_signal.evidence.recent_utilization_percent and recent_available_capacity over recent rounds, together with current total_capacity and available_capacity. Do not attempt only create_production_plan when utilization remains high, available capacity is zero, or total capacity is very low.',
+                '- When real orders or backlog exist and materials, production staffing, and idle capacity are feasible, prioritize a bounded PRODUCT_1 production plan.',
+                '- When no line is idle or available, finished-goods inventory is below its low-stock threshold, cannot cover real orders or backlog, or is clearly below the safety buffer, and cash and staffing impose no hard constraint, prioritize build_production_line review.',
+                '- Do not expand again when a line is already under construction, capacity is available, or the binding constraint is material, staffing, or cash. Expansion parameters must use only fields allowed by the template.',
+                '- If materials, staffing, or capacity has a hard shortfall, use action_pass and identify the blocking values in reason.',
             ])
         elif role_key == "sales":
             lines.extend([
-                "- Accept only real, nonzero, unexpired orders that finished-goods inventory or explicit near-term production can cover. Use reject_order or action_pass for infeasible orders.",
-                "- When multiple real available_orders exist, compare unit_price, quantity, offer_expiry_day, delivery_deadline, breach cost, and resource use. Select a portfolio by expected contribution and fulfillment feasibility instead of accepting every order mechanically.",
-                "- When agent_decision_brief.order_quality_reviews exists, use estimated_unit_margin, estimated_gross_margin, breach_penalty_exposure, days_to_deadline, days_to_expiry, quantity_to_uncommitted_inventory_ratio, and risk_flags to screen the order portfolio.",
-                "- When order_quality_reviews conflicts with the generic rule to prioritize available orders, follow the portfolio-quality evidence in order_quality_reviews.",
-                "- Prefer reject_order or defer acceptance for an available order with low margin, high breach exposure, a short deadline, and heavy use of uncommitted inventory or near-term capacity. A high unit price does not make an order attractive when it would cause a breach.",
-                "- When returning multiple accept_order actions, order them from highest to lowest portfolio quality: high unit margin, low risk, and low resource use first; lower-quality or resource-intensive orders later. Do not let a large low-quality order consume inventory and capacity budgets first.",
-                "- One JSON document may contain multiple accept_order or reject_order actions. There is no one-order-per-round rule, but the combined commitment must remain feasible.",
-                "- If market_growth_signal.recommendation_mode=evidence_only, there is no precomputed market-development answer. Independently compare active and developing markets, recent order inflow, uncommitted inventory, confirmed backlog, development cost, and duration. Refer to should_develop_market only in other modes. Treat market coverage as weak evidence.",
-                "- If fulfillable available_orders remain in the same round, accept all genuinely feasible orders after develop_market where appropriate. Do not ignore market development merely because existing orders persist.",
-                "- When accepting multiple orders, decrement committed inventory and deadline-feasible capacity after each order. Do not allocate the same inventory or capacity window more than once. High-revenue orders that cause a breach are not beneficial.",
+                '- Accept only real, nonzero, unexpired orders that finished-goods inventory or explicit near-term production can cover. Use reject_order or action_pass for infeasible orders.',
+                '- When multiple real available_orders exist, compare unit_price, quantity, offer_expiry_day, delivery_deadline, breach cost, and resource use. Select a portfolio by expected contribution and fulfillment feasibility instead of accepting every order mechanically.',
+                '- When agent_decision_brief.order_quality_reviews exists, use estimated_unit_margin, estimated_gross_margin, breach_penalty_exposure, days_to_deadline, days_to_expiry, quantity_to_uncommitted_inventory_ratio, and risk_flags to screen the order portfolio.',
+                '- When order_quality_reviews conflicts with the generic rule to prioritize available orders, follow the portfolio-quality evidence in order_quality_reviews.',
+                '- Prefer reject_order or defer acceptance for an available order with low margin, high breach exposure, a short deadline, and heavy use of uncommitted inventory or near-term capacity. A high unit price does not make an order attractive when it would cause a breach.',
+                '- When returning multiple accept_order actions, order them from highest to lowest portfolio quality: high unit margin, low risk, and low resource use first; lower-quality or resource-intensive orders later. Do not let a large low-quality order consume inventory and capacity budgets first.',
+                '- One JSON document may contain multiple accept_order or reject_order actions. There is no one-order-per-round rule, but the combined commitment must remain feasible.',
+                '- If market_growth_signal.recommendation_mode=evidence_only, there is no precomputed market-development answer. Independently compare active and developing markets, recent order inflow, uncommitted inventory, confirmed backlog, development cost, and duration. Refer to should_develop_market only in other modes. Treat market coverage as weak evidence.',
+                '- If fulfillable available_orders remain in the same round, accept all genuinely feasible orders after develop_market where appropriate. Do not ignore market development merely because existing orders persist.',
+                '- When accepting multiple orders, decrement committed inventory and deadline-feasible capacity after each order. Do not allocate the same inventory or capacity window more than once. High-revenue orders that cause a breach are not beneficial.',
             ])
         elif role_key == "hr":
             lines.extend([
-                "- If production, sales, procurement, or inventory has zero available staff, high utilization, or a pending failure caused by insufficient staffing, and pending recruitment does not cover the gap, return handle_recruitment. Multiple recruitment actions may be returned when several departments have uncovered hard gaps.",
-                "- The recruitment department must be the department with the actual staffing constraint: use PROCUREMENT when procurement execution is blocked, PRODUCTION when production is blocked, and likewise for SALES or INVENTORY.",
+                '- If production, sales, procurement, or inventory has zero available staff, high utilization, or a pending failure caused by insufficient staffing, and pending recruitment does not cover the gap, return handle_recruitment. Multiple recruitment actions may be returned when several departments have uncovered hard gaps.',
+                '- The recruitment department must be the department with the actual staffing constraint: use PROCUREMENT when procurement execution is blocked, PRODUCTION when production is blocked, and likewise for SALES or INVENTORY.',
                 "- Recruitment normally reaches onboarding during the next business day's fixed settlement. Do not recruit again when pending recruitment already covers the gap.",
-                "- Use action_pass when headcount, available staff, pending recruitment, and failure records show no hard staffing constraint.",
+                '- Use action_pass when headcount, available staff, pending recruitment, and failure records show no hard staffing constraint.',
             ])
 
+        if read_policy(self.workspace_dir).get("scenario") == "FD2":
+            lines.append(procurement_guidance())
+        fd_policy = read_policy(self.workspace_dir)
+        if fd_policy:
+            lines.extend([
+                '- Read the supplied analysis.json interface this round. It supplies department targets; actual action feasibility comes from current department state. Do not read other departments, complete enterprise observations or run metadata.',
+                '- Use the exact shared-input path supplied in the launch prompt. If coordination_available=false, use only authorized department facts, the Analyst interface and own history/feedback; do not seek another shared file.',
+            ])
         return "\n".join(lines).rstrip()
 
     def _build_communication_prompt(
@@ -2094,7 +2130,47 @@ Internal enterprise communication sidecar:
         else:
             target_name = "skill_execution_audit.json"
         target = audit_dir / target_name
-        MultiTenantUtils._write_json(target, audit.to_dict())
+        audit_payload = audit.to_dict()
+        if read_policy(self.workspace_dir, round_id):
+            audit_payload["input_access_version"] = FD_INPUT_ACCESS_VERSION
+            audit_payload["output_protocol_evidence"] = output_access_evidence(
+                self.workspace_dir, self.enterprise_spec.enterprise_name, role,
+                round_id, output_file_path,
+            )
+            audit_payload["controller_output_recovery"] = getattr(
+                self, "_output_recovery_sources", {},
+            ).get(str(Path(output_file_path).resolve()))
+        if (fd4_decision_guidance(self.workspace_dir, round_id, role)
+                or fd2_decision_guidance(self.workspace_dir, round_id, role)):
+            audit_payload["agent_prompt_policy_version"] = read_policy(
+                self.workspace_dir, round_id,
+            )["agent_prompt_policy_version"]
+        if read_policy(self.workspace_dir, round_id).get("agent_prompt_policy_version") == FD4_AGENT_PROMPT_VERSION:
+            warnings = (getattr(self, "_analysis_decision_warnings", []) if analyst else
+                        getattr(self, "_department_warning_records", {}).get(str(Path(output_file_path).resolve()), []))
+            audit_payload["decision_consistency_mode"] = "audit_only"
+            audit_payload["decision_consistency_warnings"] = warnings
+            audit_payload["validation_warnings"].extend(warnings)
+        policy = read_policy(self.workspace_dir, round_id)
+        if fd2_agent_policy(policy):
+            audit_payload["decision_consistency_mode"] = "off"
+            audit_payload["analyst_role"] = "advisory"
+        if fd2_fact_audit_policy(policy):
+            warnings = (getattr(self, "_analysis_decision_warnings", []) if analyst else
+                        getattr(self, "_department_warning_records", {}).get(str(Path(output_file_path).resolve()), []))
+            audit_payload["fact_audit_mode"] = "nonblocking"
+            audit_payload["fact_audit_warnings"] = warnings
+            audit_payload["validation_warnings"].extend(warnings)
+        if policy.get("execution_policy_version"):
+            audit_payload["execution_policy_version"] = policy["execution_policy_version"]
+        if analyst and fd_completion_enabled(policy, role, round_id):
+            audit_payload["analysis_attempt_failures"] = getattr(self, "_analyst_attempt_failures", [])
+        if fd_completion_enabled(policy, role, round_id):
+            audit_payload["completion_guard"] = {
+                "max_stop_blocks_per_attempt": 2, "successful_write_and_latest_readback_required": True,
+                "transcript_and_legacy_path_recovery_enabled": False,
+            }
+        MultiTenantUtils._write_json(target, audit_payload)
         return str(target)
 
     def _strict_context_failure(self, context_audit: Dict[str, Any]) -> Optional[str]:
@@ -2191,124 +2267,33 @@ Internal enterprise communication sidecar:
             self._build_cobweb_profit_objective_analyst_prompt()
         )
         long_horizon_response_prompt = (
-            """
-
-E1 external-change analysis contract:
-- Read external_change_review first instead of merely restating event descriptions from external_environment.
-- Use factor_comparison to distinguish a new change this round, an earlier change that remains active, and no change. Combine this with recent enterprise history to determine whether the effect comes from cost changes, order or backlog pressure, or both.
-- Do not translate a cost-factor change directly into a fixed purchase quantity, fixed production quantity, or unconditional price change. Explain the trade-off using unit economics, cash, inventory coverage, service, and capacity.
-- analysis.json must also contain the top-level external_environment_response object with this structure:
-  {
-    "observed_event_ids": ["event_id values actually observed; empty when none exist"],
-    "active_factor_assessment": {
-      "name of a factor that actually deviates from baseline": {
-        "observed_value": 1.0,
-        "business_implication": "verifiable effect on this enterprise"
-      }
-    },
-    "impact_assessment": "explain the effect and possible confounders using enterprise evidence",
-    "response_strategy": "conditional response direction for the next 2 to 3 rounds, not one mandatory action",
-    "review_criteria": "quantitative profit, cash, fulfillment, inventory, or capacity criteria for review over the next 2 to 5 rounds"
-  }
-- target, evaluation, and reason for affected departments in department_targets must agree with this response contract. When no action is needed, explain how holding the current course avoids cost, cash, or fulfillment risk.
-""".rstrip()
+            '\n\nE1 external-change analysis contract:\n- Read external_change_review first instead of merely restating event descriptions from external_environment.\n- Use factor_comparison to distinguish a new change this round, an earlier change that remains active, and no change. Combine this with recent enterprise history to determine whether the effect comes from cost changes, order or backlog pressure, or both.\n- Do not translate a cost-factor change directly into a fixed purchase quantity, fixed production quantity, or unconditional price change. Explain the trade-off using unit economics, cash, inventory coverage, service, and capacity.\n- analysis.json must also contain the top-level external_environment_response object with this structure:\n  {\n    "observed_event_ids": ["event_id values actually observed; empty when none exist"],\n    "active_factor_assessment": {\n      "name of a factor that actually deviates from baseline": {\n        "observed_value": 1.0,\n        "business_implication": "verifiable effect on this enterprise"\n      }\n    },\n    "impact_assessment": "explain the effect and possible confounders using enterprise evidence",\n    "response_strategy": "conditional response direction for the next 2 to 3 rounds, not one mandatory action",\n    "review_criteria": "quantitative profit, cash, fulfillment, inventory, or capacity criteria for review over the next 2 to 5 rounds"\n  }\n- target, evaluation, and reason for affected departments in department_targets must agree with this response contract. When no action is needed, explain how holding the current course avoids cost, cash, or fulfillment risk.\n'.rstrip()
             if spec.compact_observation_kind == "long_horizon_e1"
             else ""
         )
         observation_prompt = (
-            f"""
-
-Cobweb C3 dedicated input:
-- The current observation has been compacted to {spec.observation_path}.
-- This file contains the current operating state and a recent-history projection; it overrides the generic observation example path in the Skill document.
-- Read only this compact file. Do not read the raw observation_day{round_id}.txt, full order history, or full cobweb history.
-""".rstrip()
+            f'\n\nCobweb C3 input:\n- Current bounded observation: {spec.observation_path}.\n- This contains current operating state and recent history and overrides generic observation examples. Read this compact input only; do not open raw observation_day{round_id}.txt, complete order history or complete cobweb history.\n'.rstrip()
             if spec.compact_observation_kind == "cobweb_c3"
-            else f"""
-
-E1 bounded long-horizon analysis input:
-- The current observation has been projected to {spec.observation_path}.
-- This file retains actionable orders, proposals, inventory, capacity, cash, staffing, and external-environment state, while compressing unbounded history into counts, trends, and recent records.
-- Read only this bounded file. Do not read the raw observation_day{round_id}.txt, full order history, or full proposal history.
-- The complete raw observation remains available to execution, presentation, and audit. Do not infer that the actual state is missing because the projection is smaller.
-""".rstrip()
+            else f'\n\nBounded long-horizon input:\n- Current projected observation: {spec.observation_path}.\n- This retains actionable orders, proposals, inventory, capacity, cash, staffing and environment, with unbounded history compressed into counts, trends and recent records.\n- Read only this bounded file; do not open raw observation_day{round_id}.txt or complete order/proposal histories.\n- Full observations remain available for execution, visualization and audit; a compact input does not imply missing real business state.\n'.rstrip()
             if spec.compact_observation_kind == "long_horizon_e1"
             else ""
         )
         history_prompt = (
-            """
-Historical diagnostic input:
-- Closed recent history is embedded in the recent_history field of the compact observation.
-- Do not read a separate history_projection file.
-""".rstrip()
+            '\nHistorical diagnostic input:\n- Closed recent history is embedded in the recent_history field of the compact observation.\n- Do not read a separate history_projection file.\n'.rstrip()
             if spec.compact_observation_enabled
-            else f"""
-Single-enterprise S0 historical diagnostic input (important):
-- Latest closed history projection, day{spec.history_projection_day}: {spec.history_projection_path}
-- If the file exists, read its trend fields first to assess recent changes in market demand, order fulfillment, inventory and materials, capacity, staffing, cash, and procurement.
-- This file represents only the closed history of the current enterprise. Do not infer multi-enterprise supply-chain behavior, peer behavior, or actions by external enterprises.
-- If the file does not exist, no historical window is available for this round. Do not read a future projection or invent a historical trend.
-""".rstrip()
+            else f'\nSingle-enterprise historical diagnosis (priority):\n- Latest sealed projection, day {spec.history_projection_day}: {spec.history_projection_path}\n- If present, read its trends first to assess demand, fulfillment, inventory/materials, capacity, staffing, cash and procurement.\n- It describes this enterprise only, not an inter-firm supply chain or peer actions.\n- If absent, no historical window is available; do not read future projections or invent trends.\n'.rstrip()
             if single_case_active
-            else f"""
-Historical diagnostic input:
-- Latest closed history projection, day{spec.history_projection_day}: {spec.history_projection_path}
-- If the file exists, use its trend fields first when diagnosing phase-level issues.
-- If the file does not exist, no historical window is available for this round. Do not read a future projection or invent a historical trend.
-""".rstrip()
+            else f'\nHistorical input:\n- Latest sealed projection, day {spec.history_projection_day}: {spec.history_projection_path}\n- If present, use its trends to assess phase-level problems.\n- If absent, do not read future projections or invent history.\n'.rstrip()
         )
         chart_export_prompt = ""
         if spec.chart_export_enabled:
             chart_export_prompt = (
-                f"""
-
-Single-enterprise S0 chart diagnostic input (important):
-- Current-round charts_data_export.json: {spec.chart_export_path}
-- If this file exists, read it once and use fulfillment coverage, material coverage, warehouse pressure, cash pressure, demand-capacity gap, order funnel, and backlog aging under charts as primary diagnostic evidence.
-- Use the charts to identify operating bottlenecks and trends within the current enterprise. Do not interpret them as a multi-enterprise chain, inter-enterprise transactions, peer aggregation, or a mechanism-reproduction experiment.
-- Locate anomalies with the charts, then verify orders, inventory, capacity, staffing, cash, suppliers, and action feasibility against observation and department state.
-- If the file does not exist, do not invent chart data; complete the single-enterprise diagnosis from observation and history_projection.
-""".rstrip()
+                f'\n\nSingle-enterprise chart evidence (priority):\n- Current charts_data_export.json: {spec.chart_export_path}\n- Read once if present. Use fulfillment, material coverage, warehouse/cash pressure, demand-capacity gaps, order funnels and backlog aging as primary diagnostic evidence.\n- These charts describe internal enterprise bottlenecks, not peer aggregates or mechanism replication.\n- Locate anomalies in charts, then verify order, inventory, capacity, staffing, cash, supplier and feasibility facts in authorized observation/state.\n- If absent, use observation/history without inventing chart values.\n'.rstrip()
                 if single_case_active
-                else f"""
-
-Legacy single-enterprise chart diagnostic input:
-- Current-round charts_data_export.json: {spec.chart_export_path}
-- If this file exists, read it once and use fulfillment coverage, material coverage, warehouse pressure, cash pressure, demand-capacity gap, and order-funnel fields under charts as supporting diagnostic input.
-- This is compatibility input enabled by configuration. If the file does not exist, do not invent chart data; continue from observation and history_projection.
-""".rstrip()
+                else f'\n\nLegacy single-enterprise chart input:\n- Current charts_data_export.json: {spec.chart_export_path}\n- If present, read once and use fulfillment, materials, warehouse/cash pressure, demand-capacity gaps and order-funnel fields as supporting evidence.\n- This compatibility input is configuration-controlled; if absent, use observation/history without inventing charts.\n'.rstrip()
             )
 
-        return f"""
-This is simulation round {round_id}.
-You are the analyst for enterprise {self.enterprise_spec.enterprise_name}, responsible for a low-frequency strategic analysis report.
-
-Your role is not to issue real-time operating commands to each department every round. Instead:
-1. Identify structural issues, key bottlenecks, and phase-level opportunities.
-2. Use the current observation to create stable, executable department objectives for the next 2 to 3 rounds.
-3. Avoid objectives that the current action system cannot execute directly.
-4. Avoid amplifying local fluctuations through overly precise single-round numeric anchors.
-5. If observation.simulation_context.external_environment.enabled=true, read current_turn,
-   triggered_events, active_factors, and actual_values. Identify changes in the round when an event occurs and use recent history to determine
-   whether cost, cash, service, inventory, procurement, or production should adjust. Do not predict unreleased future events.
-{single_case_prompt}
-{cobweb_profit_prompt}
-{long_horizon_response_prompt}
-{observation_prompt}
-{history_prompt}
-{chart_export_prompt}
-
-Actual file paths for this run:
-- Current observation: {spec.observation_path}
-- Final analysis.json output: {spec.output_file_path}
-- If an example path in the Skill document still points to workspace_multi, use the actual paths listed here.
-
-Call the Skill tool immediately and use exactly the following invocation. Do not omit args or change its format:
-Skill(skill="{spec.skill_name}", args="{spec.skill_args}")
-
-After calling the skill, continue within it until {spec.output_file_name} has been written successfully.
-Do not substitute an explanation or printed JSON for writing the file.
-""".strip()
+        return f'\nCurrent simulation round: {round_id}.\nYou are the analyst for enterprise {self.enterprise_spec.enterprise_name}. Produce low-frequency strategic analysis.\nIdentify structural problems, bottlenecks and opportunities; use the current observation to define stable, executable department goals for the next two or three rounds. Do not issue round-by-round micromanagement or unsupported exact numerical targets. Use only available actions. When external_environment.enabled=true, inspect current_turn, triggered_events, active_factors and actual_values; identify activated changes and use recent history to assess cost, cash, service, inventory, procurement and production. Do not infer undisclosed future shocks.\n{single_case_prompt}\n{fd4_decision_guidance(self.workspace_dir, round_id, 'Analyst')}{fd2_decision_guidance(self.workspace_dir, round_id, 'Analyst')}\n{cobweb_profit_prompt}\n{long_horizon_response_prompt}\n{observation_prompt}\n{history_prompt}\n{chart_export_prompt}\n\nActual paths for this run:\n- Current observation: {spec.observation_path}\n- Final analysis.json: {spec.output_file_path}\n- These paths override example workspace_multi paths in the Skill.\nInvoke this exact Skill call immediately, retaining args and its format:\nSkill(skill="{spec.skill_name}", args="{spec.skill_args}")\n\nAfter invoking the Skill, continue until you successfully write {spec.output_file_name}.\nPrinting explanations or JSON does not replace writing the file.\n'.strip()
 
     def _build_analyst_same_session_resume_prompt(
         self,
@@ -2322,115 +2307,45 @@ Do not substitute an explanation or printed JSON for writing the file.
             self._build_cobweb_profit_objective_analyst_prompt()
         )
         long_horizon_response_prompt = (
-            """
-
-The E1 external-change analysis contract remains active. Complete external_environment_response with observed_event_ids,
-active_factor_assessment, impact_assessment, response_strategy, and review_criteria. Revise it using actual factors from
-external_change_review and enterprise evidence; do not present one fixed action as the answer.
-""".rstrip()
+            '\n\nThe E1 external-change analysis contract remains active. Complete external_environment_response with observed_event_ids,\nactive_factor_assessment, impact_assessment, response_strategy, and review_criteria. Revise it using actual factors from\nexternal_change_review and enterprise evidence; do not present one fixed action as the answer.\n'.rstrip()
             if spec.compact_observation_kind == "long_horizon_e1"
             else ""
         )
         observation_prompt = (
-            f"""
-
-The Cobweb C3 dedicated input remains {spec.observation_path}. Continue using only this compact input;
-do not switch to the raw observation_day{round_id}.txt, full order history, or full cobweb history.
-""".rstrip()
+            f'\n\nCobweb C3 input remains {spec.observation_path}. Read this compact input only;\ndo not open raw observation_day{round_id}.txt, complete order history or complete cobweb history.\n'.rstrip()
             if spec.compact_observation_kind == "cobweb_c3"
-            else f"""
-
-The E1 bounded long-horizon analysis input remains {spec.observation_path}. Continue using only this projection;
-do not switch to the raw observation_day{round_id}.txt, full order history, or full proposal history.
-""".rstrip()
+            else f'\n\nBounded long-horizon input remains {spec.observation_path}. Read this projection only;\ndo not open raw observation_day{round_id}.txt or complete order/proposal histories.\n'.rstrip()
             if spec.compact_observation_kind == "long_horizon_e1"
             else ""
         )
         history_prompt = (
-            """
-Historical diagnostic input:
-- Closed recent history is embedded in the compact observation's recent_history field. Do not read a separate history_projection file.
-""".rstrip()
+            "\nHistorical diagnostic input:\n- Closed recent history is embedded in the compact observation's recent_history field. Do not read a separate history_projection file.\n".rstrip()
             if spec.compact_observation_enabled
-            else f"""
-Single-enterprise S0 historical diagnostic input remains important:
-- Latest closed history projection, day{spec.history_projection_day}: {spec.history_projection_path}
-- If the file exists, use it to complete trend assessments for this enterprise's market demand, fulfillment, inventory and materials, capacity, staffing, cash, and procurement. Do not read a future projection.
-- Do not interpret this historical input as a multi-enterprise chain, inter-enterprise transaction, or peer behavior.
-""".rstrip()
+            else f"\nSingle-enterprise historical evidence remains a priority:\n- Latest sealed projection, day {spec.history_projection_day}: {spec.history_projection_path}\n- If present, use this enterprise's demand, fulfillment, inventory/materials, capacity, staffing, cash and procurement trends; never read future projections.\n- Do not interpret it as inter-firm or peer behavior.\n".rstrip()
             if single_case_active
-            else f"""
-Historical diagnostic input:
-- Latest closed history projection, day{spec.history_projection_day}: {spec.history_projection_path}
-- If the file exists, use it to complete the trend assessment. If it does not exist, do not read a future projection.
-""".rstrip()
+            else f'\nHistorical input:\n- Latest sealed projection, day {spec.history_projection_day}: {spec.history_projection_path}\n- If present, use the trends; otherwise do not read future projections.\n'.rstrip()
         )
         chart_export_prompt = ""
         if spec.chart_export_enabled:
             chart_export_prompt = (
-                f"""
-
-Single-enterprise S0 chart diagnostic input remains important:
-- Current-round charts_data_export.json: {spec.chart_export_path}
-- If the file exists, read it once to complete assessments of fulfillment coverage, material coverage, warehouse pressure, cash pressure, demand-capacity gap, order funnel, and backlog aging.
-- Use the charts only for internal diagnosis of the current enterprise; do not mix in multi-enterprise mechanisms, inter-enterprise transactions, or peer aggregation.
-""".rstrip()
+                f'\n\nSingle-enterprise chart evidence remains a priority:\n- Current charts_data_export.json: {spec.chart_export_path}\n- Read once if present to assess fulfillment, materials, warehouse/cash pressure, demand-capacity gaps, order funnels and backlog aging.\n- These describe this enterprise only, not inter-firm mechanisms or peer aggregates.\n'.rstrip()
                 if single_case_active
-                else f"""
-
-Legacy single-enterprise chart diagnostic input:
-- Current-round charts_data_export.json: {spec.chart_export_path}
-- If the file exists, read it once to complete assessments of fulfillment coverage, material coverage, warehouse pressure, cash pressure, demand-capacity gap, and order funnel.
-""".rstrip()
+                else f'\n\nLegacy chart input:\n- Current charts_data_export.json: {spec.chart_export_path}\n- If present, read once for fulfillment, materials, warehouse/cash pressure, demand-capacity gaps and order funnels.\n'.rstrip()
             )
 
-        return f"""
-This is simulation round {round_id}.
-You remain the analyst for enterprise {self.enterprise_spec.enterprise_name}.
-
-The target file was not completed in the previous turn of this session.
-Failure reason: {reason}
-
-Maintain the analyst role boundary:
-- Output only low-frequency strategic context and phase objectives for the next 2 to 3 rounds.
-- Do not turn analysis into round-by-round operating instructions.
-- Do not output objectives that the current action system cannot execute.
-- If observation does not support a highly precise value, use a robust threshold, range, or directional quantitative metric.
-{single_case_prompt}
-{cobweb_profit_prompt}
-{long_horizon_response_prompt}
-{observation_prompt}
-
-Do not restart the explanation, output a Markdown code block, or repeat a long analysis.
-Reuse the reading and reasoning already completed in the prior turn and finish the missing steps in this session.
-
-Keep the following invocation valid:
-Skill(skill="{spec.skill_name}", args="{spec.skill_args}")
-
-{history_prompt}
-{chart_export_prompt}
-
-Actual file paths for this run:
-- Current observation: {spec.observation_path}
-- Final analysis.json output: {spec.output_file_path}
-- If an example path in the Skill document still points to workspace_multi, use the actual paths listed here.
-
-Now perform only the operations needed to complete {spec.output_file_name}:
-1. If the final JSON is already determined, call Write and save it directly to {spec.output_file_name}.
-2. Immediately call Read on {spec.output_file_name} after writing it.
-3. If a required read was not completed previously, complete that read and then write the file immediately.
-4. Do not substitute an explanation or printed JSON for writing the file.
-""".strip()
+        return f'\nCurrent simulation round: {round_id}.\nYou remain the analyst for enterprise {self.enterprise_spec.enterprise_name}.\nThe previous attempt in this session did not finish writing the target file.\nFailure: {reason}\n\nRetain the analyst boundary: provide low-frequency context and goals for two or three rounds, not department micromanagement. Use executable actions. Where observations do not justify precise large numbers, use grounded thresholds, ranges or directional quantities.\n{single_case_prompt}\n{fd4_decision_guidance(self.workspace_dir, round_id, 'Analyst')}{fd2_decision_guidance(self.workspace_dir, round_id, 'Analyst')}\n{cobweb_profit_prompt}\n{long_horizon_response_prompt}\n{observation_prompt}\n\nDo not restart explanations or lengthy analysis or print Markdown fences. Reuse completed reads and reasoning in this session and finish the missing steps.\nRetain this exact Skill call contract:\nSkill(skill="{spec.skill_name}", args="{spec.skill_args}")\n\n{history_prompt}\n{chart_export_prompt}\n\nActual paths for this run:\n- Current observation: {spec.observation_path}\n- Final analysis.json: {spec.output_file_path}\n- Supplied paths override workspace_multi examples in the Skill.\nPerform only operations needed to finish {spec.output_file_name}:\n1. If final JSON is ready, Write it directly to {spec.output_file_name}\n2. Immediately Read back {spec.output_file_name}\n3. Complete any missing required reads, then write immediately.\n4. Do not substitute printed explanations or JSON for file output.\n'.strip()
 
     def _inspect_analyst_messages(
         self,
         messages: List[dict],
         spec: AnalystRunSpec,
+        session_messages: Optional[List[dict]] = None,
     ) -> AnalystRunInspection:
         text = "\n".join(m["content"] for m in messages)
 
-        skill_called = f"name='Skill'" in text and f"'skill': '{spec.skill_name}'" in text
-        skill_args_ok = spec.skill_args in text
+        skill_text = "\n".join(m["content"] for m in (session_messages or [])) + "\n" + text
+        skill_called = f"name='Skill'" in skill_text and f"'skill': '{spec.skill_name}'" in skill_text
+        skill_args_ok = spec.skill_args in skill_text
 
         write_called = "name='Write'" in text or 'name="Write"' in text
         write_target_ok = spec.output_file_path in text or spec.output_file_name in text
@@ -2477,19 +2392,22 @@ Now perform only the operations needed to complete {spec.output_file_name}:
     ) -> str:
         validation_error = getattr(self, "_last_analysis_validation_error", "")
         mapping = {
-            "skill_not_called": "The Skill tool was not actually called in the previous turn. Call it now in the exact required format and complete the file in this session.",
-            "skill_args_missing_or_wrong": f"The prior Skill call omitted or changed args. Use args=\"{spec.skill_args}\" exactly.",
-            "json_printed_but_not_written": f"The final JSON was printed but Write was not called. Do not repeat the analysis; write the established JSON to {spec.output_file_name} and read it back.",
-            "write_wrong_target": f"Write was called with the wrong target. Write the final JSON to {spec.output_file_name} and read it back.",
-            "written_but_not_readback": f"{spec.output_file_name} was written but not read back for validation. Read the target file now and complete validation.",
-            "stopped_before_write": f"The previous turn stopped before writing. Do not repeat the analysis; complete Write and readback for {spec.output_file_name}.",
-            "unknown": f"The previous turn did not complete {spec.output_file_name}. Do not restart; reuse the existing result and complete Write and readback.",
+            "skill_not_called": 'The Skill tool was not actually called in the previous turn. Call it now in the exact required format and complete the file in this session.',
+            "skill_args_missing_or_wrong": f'The previous Skill call omitted or changed args. Use exactly args="{spec.skill_args}"。',
+            "json_printed_but_not_written": f'The previous attempt produced final JSON without Write. Write that JSON directly to {spec.output_file_name} and Read it back.',
+            "write_wrong_target": f'The previous Write used the wrong path. Write the final JSON to {spec.output_file_name} and Read it back.',
+            "written_but_not_readback": f'The previous attempt wrote {spec.output_file_name} but did not read it back. Read the output now and validate it.',
+            "stopped_before_write": f'The previous attempt stopped before writing. Reuse the decision and finish Write and readback for {spec.output_file_name}.',
+            "unknown": f'The previous attempt did not finish {spec.output_file_name}. Reuse existing work to finish Write and readback.',
         }
         if validation_error:
             mapping["unknown"] = (
-                f"The {spec.output_file_name} written previously failed structural or semantic validation: "
-                f"{validation_error}. Correct that issue, call Write again, and immediately call Read to validate it."
+                f'The previously written {spec.output_file_name} failed structural/semantic validation: {validation_error}. Correct this issue, Write the full candidate and immediately Read it back.'
             )
+            if read_policy(self.workspace_dir, round_id):
+                return self._build_analyst_same_session_resume_prompt(
+                    spec, round_id, mapping["unknown"],
+                )
         return self._build_analyst_same_session_resume_prompt(
             spec,
             round_id,
@@ -2497,18 +2415,32 @@ Now perform only the operations needed to complete {spec.output_file_name}:
         )
 
     def _is_valid_json_file(self, file_path: str) -> bool:
+        path = Path(file_path)
+        active_round = getattr(self, "_active_analyst_round_id", None)
+        fd_analysis = (
+            path.name == "analysis.json"
+            and active_round is not None
+            and bool(read_policy(self.workspace_dir, active_round))
+        )
         try:
-            path = Path(file_path)
             if not path.exists():
+                if fd_analysis:
+                    self._set_analysis_validation_error("analysis.json was not created")
                 return False
             content = path.read_text(encoding="utf-8").strip()
             if not content:
+                if fd_analysis:
+                    self._set_analysis_validation_error("analysis.json is empty")
                 return False
             data = json.loads(content)
             if path.name == "analysis.json":
                 return self._is_valid_analysis_payload(data)
             return True
-        except Exception:
+        except Exception as exc:
+            if fd_analysis:
+                self._set_analysis_validation_error(
+                    f"analysis.json could not be read or validated: {type(exc).__name__}: {exc}"
+                )
             return False
 
     def _is_placeholder_text(self, value: Any) -> bool:
@@ -2821,45 +2753,202 @@ Now perform only the operations needed to complete {spec.output_file_name}:
     def _is_valid_analysis_payload(self, data: Any) -> bool:
         self._last_analysis_validation_error = ""
         if not isinstance(data, dict):
-            return self._set_analysis_validation_error("The top level of analysis.json must be an object.")
+            return self._set_analysis_validation_error('The top level of analysis.json must be an object.')
+        active_round = getattr(self, "_active_analyst_round_id", None)
+        if active_round is not None and read_policy(self.workspace_dir, active_round):
+            raw_round = data.get("round_id")
+            # The shared Skill schema permits integer rounds encoded as strings.
+            valid_round_type = type(raw_round) is int or (
+                isinstance(raw_round, str)
+                and re.fullmatch(r"[0-9]+", raw_round.strip()) is not None
+            )
+            if not valid_round_type or int(raw_round) != active_round:
+                return self._set_analysis_validation_error(
+                    f'round_id must be the current round {active_round} (integer or integer string); received {raw_round!r}。'
+                )
+            if data.get("enterprise_name") != self.enterprise_spec.enterprise_name:
+                return self._set_analysis_validation_error(
+                    f'enterprise_name must be {self.enterprise_spec.enterprise_name}; received {data.get('enterprise_name')!r}。'
+                )
         for key in ("enterprise_name", "round_id", "enterprise_summarys", "department_targets"):
             if key not in data:
-                return self._set_analysis_validation_error(f"analysis.json is missing top-level field: {key}")
+                return self._set_analysis_validation_error(f'analysis.json is missing top-level fields: {key}')
         if self._is_placeholder_text(data.get("enterprise_name")):
-            return self._set_analysis_validation_error("enterprise_name is empty or contains placeholder text.")
+            return self._set_analysis_validation_error('enterprise_name is empty or contains placeholder text.')
         if self._is_placeholder_text(str(data.get("round_id"))):
-            return self._set_analysis_validation_error("round_id is empty or contains placeholder text.")
+            return self._set_analysis_validation_error('round_id is empty or contains placeholder text.')
         if self._is_placeholder_text(data.get("enterprise_summarys")):
-            return self._set_analysis_validation_error("enterprise_summarys is empty or contains placeholder text.")
+            return self._set_analysis_validation_error('enterprise_summarys is empty or contains placeholder text.')
         targets = data.get("department_targets")
         if not isinstance(targets, dict):
-            return self._set_analysis_validation_error("department_targets must be an object.")
+            return self._set_analysis_validation_error('department_targets must be an object.')
         for dept in ("sales", "procurement"):
             if dept not in targets:
-                return self._set_analysis_validation_error(f"department_targets is missing {dept}.")
+                return self._set_analysis_validation_error(f'department_targets is missing {dept}。')
         if self.enterprise_spec.enterprise_name == "Manufacturer" and "production" not in targets:
-            return self._set_analysis_validation_error("Manufacturer department_targets is missing production.")
+            return self._set_analysis_validation_error('Manufacturer department_targets is missing production.')
         for dept, target in targets.items():
             if not isinstance(target, dict):
-                return self._set_analysis_validation_error(f"department_targets.{dept} must be an object.")
+                return self._set_analysis_validation_error(f'department_targets.{dept} must be an object.')
             for field in ("target", "evaluation", "reason"):
                 if field not in target or self._is_placeholder_text(target.get(field)):
                     return self._set_analysis_validation_error(
-                        f"department_targets.{dept}.{field} is missing or contains placeholder text."
+                        f'department_targets.{dept}.{field} is missing or contains placeholder text.'
                     )
         if not self._validate_cobweb_profit_analysis_payload(data):
             return False
         if not self._validate_long_horizon_analysis_payload(data):
             return False
+        policy = read_policy(self.workspace_dir, active_round) if active_round is not None else {}
+        if (policy.get("agent_prompt_policy_version") in FD4_DECISION_CHECK_VERSIONS
+                and active_round <= int(policy.get("formal_end", 19))):
+            source = Path(getattr(self, "_active_analyst_observation_path", None) or (
+                self._single_enterprise_analyst_input_dir(active_round) / "observation_compact.json"
+            ))
+            sources = {"observation": self._read_json_file(source, {})}
+            spec = getattr(self, "_active_analyst_spec", None)
+            if policy["agent_prompt_policy_version"] in FD4_REFERENCE_VERSIONS and spec:
+                optional = []
+                if spec.chart_export_enabled:
+                    optional.append(("charts", spec.chart_export_path))
+                if not spec.compact_observation_enabled:
+                    optional.append(("history", spec.history_projection_path))
+                for name, path in optional:
+                    if path and Path(path).is_file():
+                        sources[name] = self._read_json_file(Path(path), {})
+            errors = validate_fd4_decision(data, "analyst", sources, active_round,
+                allow_empty_records=policy["agent_prompt_policy_version"] in FD4_COMPLETION_VERSIONS)
+            if policy["agent_prompt_policy_version"] == FD4_AGENT_PROMPT_VERSION:
+                self._analysis_decision_warnings = errors
+            elif errors:
+                return self._set_analysis_validation_error("Decision consistency: " + "; ".join(errors))
+        if fd2_fact_audit_policy(policy):
+            self._analysis_decision_warnings = self._fd2_analysis_fact_warnings(data, active_round)
         return self._validate_single_enterprise_analysis_payload(data)
+
+    def _fd2_analysis_fact_warnings(self, data, round_id):
+        source = getattr(self, "_active_analyst_observation_path", None)
+        if not source:
+            return []
+        try:
+            return fd2_fact_warnings(data, "analyst", {"observation": self._read_json_file(Path(source), {})},
+                round_id, int(read_policy(self.workspace_dir, round_id).get("formal_end", 19)))
+        except (TypeError, ValueError, AttributeError, OverflowError) as exc:
+            return [f"Nonblocking fact audit could not inspect this analysis: {type(exc).__name__}: {exc}"]
+
+    def _analyst_fact_warnings(self, spec, round_id):
+        warnings = self._fd2_analysis_fact_warnings(self._read_json_file(Path(spec.output_file_path), {}), round_id)
+        self._analysis_decision_warnings = warnings
+        return warnings
+
+    def _department_decision_errors(self, spec: SkillRunSpec, round_id: int) -> List[str]:
+        policy = read_policy(self.workspace_dir, round_id)
+        if policy.get("agent_prompt_policy_version") == FD4_AGENT_PROMPT_VERSION or fd2_fact_audit_policy(policy):
+            try:
+                warnings = self._department_decision_warnings(spec, round_id)
+            except (TypeError, ValueError, AttributeError, OverflowError) as exc:
+                warnings = [f"Semantic audit could not inspect this proposal: {type(exc).__name__}: {exc}"]
+            records = getattr(self, "_department_warning_records", None)
+            if records is None:
+                self._department_warning_records = records = {}
+            records[str(Path(spec.output_file_path).resolve())] = warnings
+            return []
+        return self._department_decision_warnings(spec, round_id)
+
+    def _department_decision_warnings(self, spec: SkillRunSpec, round_id: int) -> List[str]:
+        policy = read_policy(self.workspace_dir, round_id)
+        if fd2_fact_audit_policy(policy):
+            return fd2_fact_warnings(self._read_json_file(Path(spec.output_file_path), []), spec.role,
+                {"state": self._read_json_file(Path(spec.state_path), {}),
+                 "coordination": self._read_json_file(Path(spec.blackboard_path), {})},
+                round_id, int(policy.get("formal_end", 19)))
+        if (policy.get("agent_prompt_policy_version") not in FD4_DECISION_CHECK_VERSIONS
+                or round_id > int(policy.get("formal_end", 19))):
+            return []
+        return validate_fd4_decision(
+            self._read_json_file(Path(spec.output_file_path), []), spec.role,
+            {"state": self._read_json_file(Path(spec.state_path), {}),
+             "coordination": self._read_json_file(Path(spec.blackboard_path), {}),
+             "analysis": self._read_json_file(Path(spec.analysis_path), {})},
+            round_id, allow_empty_records=policy["agent_prompt_policy_version"] in FD4_COMPLETION_VERSIONS,
+            allow_source_aliases=policy["agent_prompt_policy_version"] in FD4_ROLE_CONTRACT_VERSIONS,
+            allow_workload_leaves=policy["agent_prompt_policy_version"] in FD4_WORKLOAD_REFERENCE_VERSIONS,
+        )
+
+    def _department_completion_error(self, spec, round_id, attempt_state):
+        path = Path(spec.output_file_path)
+        if not path.is_file() or not MultiTenantUtils._is_valid_action_file(path, spec.role.lower()):
+            return "Required output is missing or does not match the action schema: " + str(path)
+        errors = self._department_decision_errors(spec, round_id)
+        if errors:
+            return "Decision consistency: " + "; ".join(errors)
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if attempt_state.get("output_write_sha256") != digest:
+            return "The current valid output must be written using Write."
+        if attempt_state.get("output_readback_sha256") != digest:
+            return "Read back the latest Write before completing."
+        admitted = accessed_inputs(self.workspace_dir, self.enterprise_spec.enterprise_name, spec.role, round_id)
+        required = [spec.state_path, spec.blackboard_path, spec.analysis_path]
+        if spec.trade_decision_card_path:
+            required.append(spec.trade_decision_card_path)
+        missing = [value for value in required if str(Path(value).resolve()) not in admitted]
+        return "Required authorized reads missing: " + ", ".join(missing) if missing else None
+
+    def _analyst_completion_error(self, spec, round_id, attempt_state):
+        path = Path(spec.output_file_path)
+        if not path.is_file():
+            return "analysis.json was not created at the required output path"
+        if not self._is_valid_json_file(spec.output_file_path):
+            return getattr(self, "_last_analysis_validation_error", "") or "analysis.json is invalid"
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if attempt_state.get("output_write_sha256") != digest:
+            return "Write has not successfully produced the current complete analysis.json"
+        if attempt_state.get("output_readback_sha256") != digest:
+            return "Read has not successfully checked the latest Write; read back analysis.json"
+        admitted = accessed_inputs(self.workspace_dir, self.enterprise_spec.enterprise_name, "Analyst", round_id)
+        required = [spec.observation_path]
+        if spec.chart_export_enabled and Path(spec.chart_export_path).is_file():
+            required.append(spec.chart_export_path)
+        if not spec.compact_observation_enabled and Path(spec.history_projection_path).is_file():
+            required.append(spec.history_projection_path)
+        missing = [value for value in required if str(Path(value).resolve()) not in admitted]
+        if missing:
+            return "Required authorized Analyst reads missing: " + ", ".join(missing)
+        return None
 
     def _remove_stale_output_file(self, file_path: str) -> None:
         path = Path(file_path)
+        getattr(self, "_output_recovery_sources", {}).pop(str(path.resolve()), None)
         try:
             if path.exists():
                 path.unlink()
         except Exception:
             pass
+
+    def _department_output_failure_reason(self, file_path: str, department: str) -> str:
+        path = Path(file_path)
+        if not path.exists():
+            return "Agent output was not created: " + file_path
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            return f"Agent output cannot be parsed: {type(exc).__name__}: {exc}; path={file_path}"
+        payload = MultiTenantUtils._normalize_action_payload_shape(payload)
+        if not isinstance(payload, list) or not payload:
+            return "Agent output must be a nonempty flat action array [ACTION_ITEM, ...]: " + file_path
+        for index, item in enumerate(payload):
+            if not isinstance(item, dict):
+                return (
+                    f"Agent output item[{index}] must be an action object, not {type(item).__name__}; "
+                    "use [ACTION_ITEM, ...], not [[ACTION_ITEM, ...]]."
+                )
+            if not MultiTenantUtils._is_valid_action_payload([item], department):
+                return (
+                    f"Agent output item[{index}] violates the {department} action schema; "
+                    "check action.action_name, required action.action_param fields, "
+                    "action_reason, module_type and executor_id."
+                )
+        return "Agent output failed validation: " + file_path
 
     def _read_python_string_literal(self, text: str, start_idx: int) -> Optional[str]:
         if start_idx >= len(text) or text[start_idx] not in ("'", '"'):
@@ -2981,6 +3070,7 @@ Now perform only the operations needed to complete {spec.output_file_name}:
             output_name = output_name[4:]
         if output_name.endswith("_action.json"):
             dept = output_name.removesuffix("_action.json")
+            data = self._normalize_recovered_output_payload(data, output_file_path)
             return MultiTenantUtils._is_valid_action_payload(data, dept)
         return isinstance(data, (list, dict))
 
@@ -2989,7 +3079,15 @@ Now perform only the operations needed to complete {spec.output_file_name}:
         if output_name.startswith("pre_"):
             output_name = output_name[4:]
         if output_name.endswith("_action.json"):
-            return MultiTenantUtils._normalize_action_payload_shape(data)
+            day_match = re.fullmatch(r"day(\d+)", Path(output_file_path).parent.name)
+            workspace = getattr(self, "workspace_dir", None)
+            allow_wrapper = bool(
+                workspace is not None and day_match
+                and read_policy(workspace, int(day_match.group(1)))
+            )
+            return MultiTenantUtils._normalize_action_payload_shape(
+                data, allow_legacy_wrapper=allow_wrapper,
+            )
         return data
 
     def _extract_payload_from_printed_write_call(self, data: Any, output_file_path: str) -> Any:
@@ -3047,6 +3145,9 @@ Now perform only the operations needed to complete {spec.output_file_name}:
                     json.dumps(data, ensure_ascii=False, indent=2),
                     encoding="utf-8",
                 )
+                if not hasattr(self, "_output_recovery_sources"):
+                    self._output_recovery_sources = {}
+                self._output_recovery_sources[str(path.resolve())] = "validated_model_transcript"
                 return True
             except Exception:
                 return False
@@ -3098,6 +3199,9 @@ Now perform only the operations needed to complete {spec.output_file_name}:
                 json.dumps(data, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+            if not hasattr(self, "_output_recovery_sources"):
+                self._output_recovery_sources = {}
+            self._output_recovery_sources[str(expected_path.resolve())] = "validated_legacy_output_path"
             return str(legacy_path)
         except Exception:
             return None
@@ -3450,6 +3554,12 @@ Now perform only the operations needed to complete {spec.output_file_name}:
                 round_id=round_id,
             )
         )
+        blackboard_path = materialize_coordination_input(
+            self.workspace_dir, enterprise_name, dept_dir_name, round_id, blackboard_path,
+        )
+        state_path, blackboard_path = materialize_fd_department_inputs(
+            self.workspace_dir, enterprise_name, dept_dir_name, round_id, state_path, blackboard_path,
+        )
         trade_decision_card_path = None
         if dept_dir_name in {"procurement", "sales"}:
             trade_decision_card_path = str(
@@ -3550,37 +3660,31 @@ E1 external-change response constraints:
     ) -> str:
         trade_prompt = ""
         if need_trade:
-            trade_prompt = "This is the second, trade phase: prioritize proposals in the trade card and choose a valid accept_proposal_order or reject_proposal_order action."
+            trade_prompt = 'This is the second, trade phase: prioritize proposals in the trade card and choose a valid accept_proposal_order or reject_proposal_order action.'
         extra_input_prompt = ""
         if spec.trade_decision_card_path:
-            extra_input_prompt = f"\n3. trade_decision_card.json: {spec.trade_decision_card_path}\nRead this first and decide from action_candidates, review_queue, new_or_updated_proposals, and pressure_changes."
+            extra_input_prompt = f'\n3. trade_decision_card.json: {spec.trade_decision_card_path}\nRead this first and decide from action_candidates / review_queue / new_or_updated_proposals / pressure_changes.'
         action_prompt = ""
+        if read_policy(self.workspace_dir, round_id):
+            action_prompt = (
+                f"\nRead the supplied analysis interface once: {spec.analysis_path}. "
+                "Use only the supplied role-scoped state, coordination input and your own feedback.\n"
+            )
+            action_prompt += (
+                """Reuse successful reads; request explicit unread ranges only when crucial content was truncated. Do not repeatedly request absent or denied files. action_pass.action_param is a real state-based reason string; retain action_reason, the department module_type and enterprise executor_id. No extra pass-template read is needed. Decide pass from feasibility, not a read failure alone.
+Inputs retain all open records and counts plus four recent historical records. Do not read raw department archives or cumulative history. Shared facts come from authorized shared inputs; department policy comes from state.policy_context. Read each input once, decide, Write the complete JSON, then Read it back.
+"""
+            )
         long_horizon_response_prompt = (
             self._build_long_horizon_department_response_prompt(spec.role)
         )
         compact_context_prompt = ""
         if spec.compact_context:
-            compact_context_prompt = """
-E1 long-horizon context constraints:
-- The department state and blackboard in this prompt are authoritative compact projections for the current round. The executor and presentation layer retain the complete archive.
-- Decide directly from agent_decision_brief, policy_context, current open records, recent-history summary, and cross-department summary in the projection.
-- Do not search or paginate through the complete same-round department archive, cumulative order history, or cumulative replenishment history; they contain no additional executable objects.
-- Candidate records provide a bounded decision window through max_open_records. open_records_summary and filtered_non_actionable_summary describe coverage; use history_summary and recent_* only for trend checks, never to invent an order or proposal id.
-""".rstrip()
+            compact_context_prompt = '\nE1 long-horizon context constraints:\n- The department state and blackboard in this prompt are authoritative compact projections for the current round. The executor and presentation layer retain the complete archive.\n- Decide directly from agent_decision_brief, policy_context, current open records, recent-history summary, and cross-department summary in the projection.\n- Do not search or paginate through the complete same-round department archive, cumulative order history, or cumulative replenishment history; they contain no additional executable objects.\n- Candidate records provide a bounded decision window through max_open_records. open_records_summary and filtered_non_actionable_summary describe coverage; use history_summary and recent_* only for trend checks, never to invent an order or proposal id.\n'.rstrip()
         if spec.role in {"Production", "Sales", "Procurement", "HR"}:
-            action_prompt = f"""
-
-Additional hard constraints for the {spec.role} department:
-- Do not ask the user a question, request confirmation, or output only Markdown or a code block.
-- After reading department state and blackboard, write {spec.output_file_name} immediately when the fields support a decision; do not repeatedly read analysis.json or history files.
-- agent_decision_brief at the top of department state is the quick decision index for this round. Read the leading content at offset=0 first; do not paginate through a large file merely to reach simulation_context, herding_history, or the blackboard tail.
-- Once the final JSON is formed, call Write directly. The system rejects completion that only prints JSON.
-""".rstrip()
+            action_prompt += f'\n\n{spec.role} department constraints:\n- Do not ask the user for confirmation or finish with Markdown/code fences.\n- Once state and blackboard contain sufficient facts, immediately write {spec.output_file_name}; do not repeatedly read analysis or history.\n- Read the initial agent_decision_brief at offset=0 first; do not page through large tails merely to find simulation_context, herding_history or blackboard content.\n- Once final JSON is ready, invoke Write; printing JSON is not completion.\n'.rstrip()
         if spec.role == "Production":
-            action_prompt += """
-- In herding_market, empty raw_materials is valid configuration; do not perform lengthy recipe-completion reasoning.
-- In herding_market, choose only create_production_plan or action_pass. Do not read production action templates unless an existing plan_id must be operated on.
-""".rstrip()
+            action_prompt += '\n- In herding_market, empty raw_materials is valid configuration; do not perform lengthy recipe-completion reasoning.\n- In herding_market, choose only create_production_plan or action_pass. Do not read production action templates unless an existing plan_id must be operated on.\n'.rstrip()
             runtime_contract = self._runtime_contract()
             simulation_config = (
                 (runtime_contract.get("scenario_config") or {}).get("simulation")
@@ -3602,93 +3706,46 @@ Additional hard constraints for the {spec.role} department:
                         "enabled"
                     )
                 )
-                action_prompt += """
-- In cobweb mode, agent_decision_brief.cobweb_signal at the top of production.json is the authoritative price-signal summary for this round. Check only the following policy_context and self_state feasibility fields.
-- simulation_context.cobweb_history is already a compact recent window. Do not paginate in search of full history; complete history is for experiment archiving, not a prerequisite for current action.
-- Once price direction, actual product_id, available capacity, materials, and cash support an action, write production_action.json immediately.
-""".rstrip()
+                action_prompt += '\n- In cobweb mode, agent_decision_brief.cobweb_signal at the top of production.json is the authoritative price-signal summary for this round. Check only the following policy_context and self_state feasibility fields.\n- simulation_context.cobweb_history is already a compact recent window. Do not paginate in search of full history; complete history is for experiment archiving, not a prerequisite for current action.\n- Once price direction, actual product_id, available capacity, materials, and cash support an action, write production_action.json immediately.\n'.rstrip()
                 if profit_objective_enabled:
-                    action_prompt += """
-- This is profit-objective cobweb mode: price direction is market evidence, not an instruction to expand or contract production. Determine quantity according to objective_mode using profit, cash, fulfillment, inventory, and adjustment risk.
-""".rstrip()
+                    action_prompt += '\n- This is profit-objective cobweb mode: price direction is market evidence, not an instruction to expand or contract production. Determine quantity according to objective_mode using profit, cash, fulfillment, inventory, and adjustment risk.\n'.rstrip()
         if spec.role == "HR":
-            action_prompt += """
-- If hr.json, analysis, or blackboard shows a real department staffing gap, zero available staff, high utilization, or a pending insufficient-staff failure, and pending recruitment does not cover the gap, prioritize handle_recruitment during the diagnostic window. Do not use action_pass merely because a generic threshold was not triggered.
-- handle_recruitment.action_param.department must identify the actually constrained department: use PROCUREMENT when procurement is staffing-blocked and PRODUCTION when production is staffing-blocked. Use the state target for num_people or a conservative default of 2.
-- If no valid recruitment action exists, write action_pass in the standard structure. Do not read a nonexistent action_pass template or output the legacy top-level pass_reason structure.
-""".rstrip()
-        if spec.role == "Sales":
-            if self._cobweb_profit_objective_contract():
+            if (read_policy(self.workspace_dir, round_id).get("agent_prompt_policy_version") == FD4_AGENT_PROMPT_VERSION
+                    or fd2_agent_policy(read_policy(self.workspace_dir, round_id))):
                 action_prompt += """
-- This is Cobweb C3 profit-objective mode. unit_price, total_amount, quantity, and deadline in agent_decision_brief.available_orders are order-economics evidence; do not accept an order solely because it is available.
-- If finished-goods inventory can fulfill an order, a positive-price order can contribute incremental revenue. If accepting it requires new production, compare unit price, estimated incremental production cost, cash, delivery risk, and service pressure.
-- Do not accept a residual order with deadline_status=expired. If unexpired orders exist, process the one with the strongest economics and timing; otherwise use reject_order to clear the expired residual.
-- Choose accept_order, reject_order, or action_pass, and explain profit or marginal contribution, inventory coverage, and service effect in action_reason. Price direction is not an instruction to accept an order.
-- agent_decision_brief, compact self_state.sales_orders, and sales_metrics are sufficient for this round. Do not paginate through completed-order or demand_backlog history.
+- Analyst targets are advisory. Correct them using current staffing, completed hiring and actual work; do not hire HR or other departments solely to satisfy a target.
+- Recruitment does not require existing HR staff. Production tasks allocate their own workers. decision_check is optional audit evidence; its absence or warnings do not prevent legal actions.
+""".rstrip()
+            elif read_policy(self.workspace_dir, round_id).get("agent_prompt_policy_version") in FD4_ROLE_CONTRACT_VERSIONS:
+                action_prompt += """
+- Hiring requires both department-specific work and a net staffing gap; zero headcount, abundant cash or Analyst advice is not workload evidence. Derive headcount rather than defaulting to two.
+- With allocated=0 and available>0, legal work actions allocate staff; do not invent allocation or transfer actions. Explain coverage before choosing pass.
+- handle_recruitment requires top-level decision_check citing current state/coordination; the supplied blackboard.json is the coordination input.
 """.rstrip()
             else:
                 action_prompt += """
-- If market_growth_signal.recommendation_mode=evidence_only, decide whether to develop_market from market count, order inflow, uncommitted inventory, backlog, development cost, and duration. Do not assume the system has recommended an action. In other modes, prioritize the minimum effective market-development action only when should_develop_market=true.
-- Otherwise, if agent_decision_brief.available_orders is nonempty, select one or more orders by price, quantity, offer validity, delivery deadline, expected contribution, and cumulative fulfillment coverage. Process beneficial fulfillable orders and reject orders that clearly lose money, are dominated by another order, or create overcommitment. Do not assume only one order can be accepted per round.
+- During diagnosis, prioritize handle_recruitment when actual workload, zero available staff, high utilization or staffing failures establish a hard gap not covered by pending hires. Do not pass only because a generic threshold is unmet.
+- Use the actually blocked department: PROCUREMENT or PRODUCTION as appropriate. Use a state-supported headcount or the conservative legacy default of two.
+- If no legal hiring action exists, output standard action_pass without rereading its template; do not use the old top-level pass_reason format.
 """.rstrip()
+        if spec.role == "Sales":
+            if self._cobweb_profit_objective_contract():
+                action_prompt += '\n- This is Cobweb C3 profit-objective mode. unit_price, total_amount, quantity, and deadline in agent_decision_brief.available_orders are order-economics evidence; do not accept an order solely because it is available.\n- If finished-goods inventory can fulfill an order, a positive-price order can contribute incremental revenue. If accepting it requires new production, compare unit price, estimated incremental production cost, cash, delivery risk, and service pressure.\n- Do not accept a residual order with deadline_status=expired. If unexpired orders exist, process the one with the strongest economics and timing; otherwise use reject_order to clear the expired residual.\n- Choose accept_order, reject_order, or action_pass, and explain profit or marginal contribution, inventory coverage, and service effect in action_reason. Price direction is not an instruction to accept an order.\n- agent_decision_brief, compact self_state.sales_orders, and sales_metrics are sufficient for this round. Do not paginate through completed-order or demand_backlog history.\n'.rstrip()
+            else:
+                action_prompt += '\n- If market_growth_signal.recommendation_mode=evidence_only, decide whether to develop_market from market count, order inflow, uncommitted inventory, backlog, development cost, and duration. Do not assume the system has recommended an action. In other modes, prioritize the minimum effective market-development action only when should_develop_market=true.\n- Otherwise, if agent_decision_brief.available_orders is nonempty, select one or more orders by price, quantity, offer validity, delivery deadline, expected contribution, and cumulative fulfillment coverage. Process beneficial fulfillable orders and reject orders that clearly lose money, are dominated by another order, or create overcommitment. Do not assume only one order can be accepted per round.\n'.rstrip()
         if spec.role in {"Sales", "Procurement"} and spec.trade_decision_card_path:
-            action_prompt += """
-- Select a proposal only from trade_decision_card.action_candidates or an actionable item in review_queue. filtered_proposals is audit-only and must not be accepted or rejected.
-- If action_candidates is empty, prioritize action_pass. Do not process an expired, superseded, fulfilled, rejected, or already-responded proposal.
-""".rstrip()
+            action_prompt += '\n- Select a proposal only from trade_decision_card.action_candidates or an actionable item in review_queue. filtered_proposals is audit-only and must not be accepted or rejected.\n- If action_candidates is empty, prioritize action_pass. Do not process an expired, superseded, fulfilled, rejected, or already-responded proposal.\n'.rstrip()
         single_case_department_prompt = self._build_single_enterprise_department_decision_prompt(spec.role)
         if spec.role == "Finance":
             history_projection_path = self._history_projection_path(round_id)
             history_projection_day = self._history_projection_day(round_id)
-            action_prompt += f"""
-Finance advisory hard constraints:
-- Output only the financial diagnostic sidecar, not an executable action.
-- The final output file must be {spec.output_file_path}, not finance_action.json.
-- If the latest closed history projection for day{history_projection_day} exists, read it at {history_projection_path}.
-- If the file does not exist, do not read a future projection or invent a historical trend.
-- recommended_controls may contain only natural-language control recommendations, not action JSON or instructions that another department directly execute an action_name.
-""".rstrip()
+            action_prompt += f'\nFinance advisory constraints:\n- Produce financial-diagnosis sidecar JSON, not executable accounting actions.\n- Final output must be {spec.output_file_path}, not finance_action.json.\n- A sealed historical projection, day {history_projection_day}, may be read at {history_projection_path}\n- If absent, do not read future projections or invent trends.\n- recommended_controls contains prose advice only, not action JSON or commands that other departments must execute.\n'.rstrip()
         communication_prompt = (
             self._build_communication_prompt(spec, round_id)
             if not need_trade
             else ""
         )
-        return f"""
-This is business day {round_id}.
-You lead the {spec.role} department of enterprise {self.enterprise_spec.enterprise_name}.
-
-Call the Skill tool immediately and use exactly the following invocation. Do not omit args or change its format:
-Skill(skill="{spec.skill_name}", args="{spec.skill_args}")
-{trade_prompt}
-
-Actual file paths:
-1. Department state: {spec.state_path}
-2. blackboard.json: {spec.blackboard_path}
-{extra_input_prompt}
-{4 if not spec.trade_decision_card_path else 5}. analysis.json (low-frequency strategic context; consult only for long-term objectives or cross-department explanation): {spec.analysis_path}
-{5 if not spec.trade_decision_card_path else 6}. Final output: {spec.output_file_path}
-{6 if not spec.trade_decision_card_path else 7}. Action template directory: {spec.action_template_dir}
-
-If a path in the Skill document is symbolic or an old workspace_multi example, use the actual absolute path in this launch prompt. Read an action template from `<action template directory>/<action_name>.json`.
-
-Authority order: policy_context plus live state, blackboard, and trade_decision_card override analysis.json and generic natural-language rules.
-Continuous-evolution rule: if policy_context.active_modes.external_environment_evolution=true, first read the current-round events,
-active factors, and actual values in policy_context.relevant_policies.external_environment.state. Then decide from this department's
-real orders, costs, inventory, cash, and capacity. Under stable demand, do not increase order, replenishment, or production variability without evidence.
-{long_horizon_response_prompt}
-Single-enterprise S0 diagnostic rules:
-- If policy_context.single_enterprise_diagnostic_policy.enabled=true in department state, interpret it only as a switch indicating a single-enterprise diagnostic run. Do not search for, infer, or cite an internal experiment identifier, preset scenario label, department priority, or preset contradiction.
-- During the diagnostic window, do not output an action that conflicts with current state merely for ordinary expansion. Decide action_pass only from actual department state, action templates, and feasibility constraints.
-- Do not use department priority as the reason for an action or pass in action_reason.
-- Sales must not repeatedly accept_order merely because available_orders is nonempty. First confirm that the order is real, nonzero, unexpired, fulfillable, and does not increase operating pressure created by inventory, capacity, staffing, or cash.
-{single_case_department_prompt}
-{compact_context_prompt}
-{action_prompt}
-{communication_prompt}
-
-After calling the skill, continue within it until {spec.output_file_name} has been written successfully.
-Do not substitute an explanation or printed JSON for writing the file.
-""".strip()
+        return f'\nCurrent simulation round: {round_id}.\nYou manage {self.enterprise_spec.enterprise_name} / {spec.role}.\nInvoke this exact Skill call immediately; do not omit or change args:\nSkill(skill="{spec.skill_name}", args="{spec.skill_args}")\n{trade_prompt}\n\nActual paths:\n1. Department state: {spec.state_path}\n2. blackboard.json: {spec.blackboard_path}\n{extra_input_prompt}\n{(4 if not spec.trade_decision_card_path else 5)}. analysis.json（{('Required interface this round' if read_policy(self.workspace_dir, round_id) else 'Low-frequency strategic reference, used only when long-term targets or cross-department context are needed')}）: {spec.analysis_path}\n{(5 if not spec.trade_decision_card_path else 6)}. Final output: {spec.output_file_path}\n{(6 if not spec.trade_decision_card_path else 7)}. Action templates: {spec.action_template_dir}\n\nUse these absolute paths rather than symbolic or old workspace_multi examples. Read templates as <template directory>/<action_name>.json.\nAuthority order: policy_context and current state / blackboard / trade_decision_card override analysis.json and general prose.\nIf external_environment_evolution is active, inspect external_environment current_turn, triggered_events, active_factors and actual_values. Adapt to activated changes only; do not infer undisclosed future shocks.\n{long_horizon_response_prompt}\nSingle-enterprise diagnostic rules:\n- single_enterprise_diagnostic_policy.enabled identifies this diagnostic mode only. Do not infer internal experiment IDs, preset answers, department priority or the intended conflict.\n- Decide actions/pass from real department state, templates and feasibility rather than ordinary expansion goals that contradict current constraints.\n- Do not cite department identity or priority as the action/pass reason.\n- Sales must assess inventory, delivery deadlines, capacity, materials, cash and existing commitments instead of accepting every available order.\n- Procurement and Production must assess actual demand and net gaps rather than treating recommended targets as execution commands.\n{single_case_department_prompt}\n{compact_context_prompt}\n{action_prompt}\n{fd4_decision_guidance(self.workspace_dir, round_id, spec.role)}{fd2_decision_guidance(self.workspace_dir, round_id, spec.role)}\n{communication_prompt}\n\nAfter invoking the Skill, continue until you successfully write {spec.output_file_name}.\nPrinting explanations or JSON does not replace writing the file.\n'.strip()
 
     def _build_same_session_resume_prompt(
         self,
@@ -3699,7 +3756,7 @@ Do not substitute an explanation or printed JSON for writing the file.
     ) -> str:
         extra_input_prompt = ""
         if spec.trade_decision_card_path:
-            extra_input_prompt = f"\n3. trade_decision_card.json: {spec.trade_decision_card_path}\nRead it if not yet read; otherwise reuse review_queue and pressure_changes to complete the trade decision."
+            extra_input_prompt = f'\n3. trade_decision_card.json: {spec.trade_decision_card_path}\nRead if unread; otherwise reuse review_queue / pressure_changes to complete the trade decision.'
         communication_prompt = (
             self._build_communication_prompt(spec, round_id)
             if not need_trade
@@ -3709,42 +3766,7 @@ Do not substitute an explanation or printed JSON for writing the file.
         long_horizon_response_prompt = (
             self._build_long_horizon_department_response_prompt(spec.role)
         )
-        return f"""
-This is business day {round_id}.
-You remain the head of the {spec.role} department at enterprise {self.enterprise_spec.enterprise_name}.
-
-The target file was not completed in the previous turn of this session.
-Failure reason: {reason}
-
-Do not restart the explanation, output a Markdown code block, or repeat a long analysis.
-Reuse the reading and decision results already completed in the previous turn and finish the missing steps in this session.
-
-Keep the following invocation valid:
-Skill(skill="{spec.skill_name}", args="{spec.skill_args}")
-
-Actual file paths:
-1. Department state: {spec.state_path}
-2. blackboard.json: {spec.blackboard_path}
-{extra_input_prompt}
-{4 if not spec.trade_decision_card_path else 5}. analysis.json (low-frequency strategic context; consult only for long-term objectives or cross-department explanation): {spec.analysis_path}
-{5 if not spec.trade_decision_card_path else 6}. Final output: {spec.output_file_path}
-{6 if not spec.trade_decision_card_path else 7}. Action template directory: {spec.action_template_dir}
-
-If a path in the Skill document is symbolic or an old workspace_multi example, use the actual absolute path in this launch prompt. Read an action template from `<action template directory>/<action_name>.json`.
-
-Authority order: policy_context plus live state, blackboard, and trade_decision_card override analysis.json and generic natural-language rules.
-{long_horizon_response_prompt}
-The single-enterprise S0 diagnostic rule remains active: if policy_context.single_enterprise_diagnostic_policy.enabled=true, interpret it only as a single-enterprise diagnostic-run switch. Decide action_pass only from actual department state, action templates, and feasibility constraints; never cite department priority or an internal experiment label.
-{single_case_department_prompt}
-{communication_prompt}
-
-Now perform only the operations needed to complete {spec.output_file_name}:
-1. If the final JSON is already determined, call Write and save it directly to {spec.output_file_name}.
-2. Immediately call Read on {spec.output_file_name} after writing it.
-3. If agent_decision_brief or a key order or production signal at the top of department state was already read, do not paginate through the large file; complete the write directly.
-4. If a required file has not been read, read only its essential leading section at offset=0 and then write immediately.
-5. Do not substitute an explanation or printed JSON for writing the file.
-""".strip()
+        return f'\nCurrent simulation round: {round_id}.\nYou still manage {self.enterprise_spec.enterprise_name} / {spec.role}.\nThe previous attempt in this session did not finish the target file.\nFailure: {reason}\n\nDo not restart lengthy analysis or print Markdown fences. Reuse completed reads and decisions in this session and finish the missing steps.\nRetain this exact Skill call contract:\nSkill(skill="{spec.skill_name}", args="{spec.skill_args}")\n\nActual paths:\n1. Department state: {spec.state_path}\n2. blackboard.json: {spec.blackboard_path}\n{extra_input_prompt}\n{(4 if not spec.trade_decision_card_path else 5)}. analysis.json（{('Required interface this round' if read_policy(self.workspace_dir, round_id) else 'Low-frequency strategic reference, used only when long-term targets or cross-department context are needed')}）: {spec.analysis_path}\n{(5 if not spec.trade_decision_card_path else 6)}. Final output: {spec.output_file_path}\n{(6 if not spec.trade_decision_card_path else 7)}. Action templates: {spec.action_template_dir}\n\nUse these actual absolute paths instead of symbolic or old workspace_multi examples. Read templates as <template directory>/<action_name>.json.\nAuthority order: policy_context and current state / blackboard / trade_decision_card override analysis.json and general prose.\n{long_horizon_response_prompt}\nSingle-enterprise diagnostic rules remain active: the policy flag identifies the mode, not a preset answer. Decide actions/pass using current state, templates and feasibility; do not cite department priority or internal experiment labels.\n{single_case_department_prompt}\n{fd4_decision_guidance(self.workspace_dir, round_id, spec.role)}{fd2_decision_guidance(self.workspace_dir, round_id, spec.role)}\n{communication_prompt}\n\nPerform only operations required to finish {spec.output_file_name}:\n1. If final JSON is ready, Write it directly to {spec.output_file_name}\n2. Immediately Read back {spec.output_file_name}\n3. If the department brief or crucial order/production facts were read, stop paging through large files and write.\n4. If required reads remain, read only the crucial initial range with offset=0, then write.\n5. Do not substitute explanations or printed JSON for file output.\n'.strip()
 
     def _build_business_repair_prompt(
         self,
@@ -3755,7 +3777,7 @@ Now perform only the operations needed to complete {spec.output_file_name}:
     ) -> str:
         extra_input_prompt = ""
         if spec.trade_decision_card_path:
-            extra_input_prompt = f"\n3. trade_decision_card.json: {spec.trade_decision_card_path}\nDuring repair, consult review_queue and recommended_action first to avoid processing a historical proposal again."
+            extra_input_prompt = f'\n3. trade_decision_card.json: {spec.trade_decision_card_path}\nDuring repair, use review_queue / recommended_action and do not reprocess historical proposals.'
         communication_prompt = (
             self._build_communication_prompt(spec, round_id)
             if not need_trade
@@ -3765,40 +3787,7 @@ Now perform only the operations needed to complete {spec.output_file_name}:
         long_horizon_response_prompt = (
             self._build_long_horizon_department_response_prompt(spec.role)
         )
-        return f"""
-This is business day {round_id}.
-You remain the head of the {spec.role} department at enterprise {self.enterprise_spec.enterprise_name}.
-
-You generated {spec.output_file_name} in the previous turn, but business execution failed.
-Error file path: /{error_file}
-
-Do not restart or provide a long explanation.
-Repair only the error in this session and regenerate a correct {spec.output_file_name}.
-
-Keep the following invocation valid:
-Skill(skill="{spec.skill_name}", args="{spec.skill_args}")
-
-Actual file paths:
-1. Department state: {spec.state_path}
-2. blackboard.json: {spec.blackboard_path}
-{extra_input_prompt}
-{4 if not spec.trade_decision_card_path else 5}. analysis.json (low-frequency strategic context; consult only for long-term objectives or cross-department explanation): {spec.analysis_path}
-{5 if not spec.trade_decision_card_path else 6}. Final output: {spec.output_file_path}
-{6 if not spec.trade_decision_card_path else 7}. Action template directory: {spec.action_template_dir}
-
-If a path in the Skill document is symbolic or an old workspace_multi example, use the actual absolute path in this launch prompt. Read an action template from `<action template directory>/<action_name>.json`.
-
-Authority order: policy_context plus live state, blackboard, and trade_decision_card override analysis.json and generic natural-language rules.
-{long_horizon_response_prompt}
-The single-enterprise S0 diagnostic rule remains active: if policy_context.single_enterprise_diagnostic_policy.enabled=true, interpret it only as a single-enterprise diagnostic-run switch. Do not override current state constraints for ordinary expansion, and do not explain an action or pass using department priority or an internal experiment label.
-{single_case_department_prompt}
-{communication_prompt}
-
-After repair:
-1. Call Write to save the new {spec.output_file_name}.
-2. Immediately call Read to validate it.
-3. Do not substitute an explanation or printed JSON for writing the file.
-""".strip()
+        return f'\nCurrent simulation round: {round_id}.\nYou still manage {self.enterprise_spec.enterprise_name} / {spec.role}.\nThe previous attempt produced {spec.output_file_name} but execution failed.\nError file: /{error_file}\n\nIn this session, repair the specific error and regenerate {spec.output_file_name}.\nRetain this exact Skill call contract:\nSkill(skill="{spec.skill_name}", args="{spec.skill_args}")\n\nActual paths:\n1. Department state: {spec.state_path}\n2. blackboard.json: {spec.blackboard_path}\n{extra_input_prompt}\n{(4 if not spec.trade_decision_card_path else 5)}. analysis.json（{('Required interface this round' if read_policy(self.workspace_dir, round_id) else 'Low-frequency strategic reference, used only when long-term targets or cross-department context are needed')}）: {spec.analysis_path}\n{(5 if not spec.trade_decision_card_path else 6)}. Final output: {spec.output_file_path}\n{(6 if not spec.trade_decision_card_path else 7)}. Action templates: {spec.action_template_dir}\n\nUse these actual absolute paths instead of symbolic or old workspace_multi examples. Read templates as <template directory>/<action_name>.json.\nAuthority order: policy_context and current state / blackboard / trade_decision_card override analysis.json and general prose.\n{long_horizon_response_prompt}\nSingle-enterprise diagnostic rules remain active. Do not override current constraints with ordinary expansion goals or justify action/pass by department priority or internal labels.\n{single_case_department_prompt}\n{fd4_decision_guidance(self.workspace_dir, round_id, spec.role)}{fd2_decision_guidance(self.workspace_dir, round_id, spec.role)}\n{communication_prompt}\n\nCompletion requires:\n1. Write the corrected {spec.output_file_name}\n2. Immediately Read it back and validate.\n3. Printing explanations or JSON is not file delivery.\n'.strip()
 
     # =========================
     # helper: options / session
@@ -3872,11 +3861,13 @@ After repair:
         self,
         messages: List[dict],
         spec: SkillRunSpec,
+        session_messages: Optional[List[dict]] = None,
     ) -> RunInspection:
         text = "\n".join(m["content"] for m in messages)
 
-        skill_called = f"name='Skill'" in text and f"'skill': '{spec.skill_name}'" in text
-        skill_args_ok = spec.skill_args in text
+        session_text = "\n".join(m["content"] for m in (session_messages or []) + messages)
+        skill_called = f"name='Skill'" in session_text and f"'skill': '{spec.skill_name}'" in session_text
+        skill_args_ok = spec.skill_args in session_text
 
         read_analysis = spec.analysis_path in text or Path(spec.analysis_path).name in text
         read_state = spec.state_path in text or Path(spec.state_path).name in text
@@ -3886,11 +3877,22 @@ After repair:
             or spec.trade_decision_card_path in text
             or Path(spec.trade_decision_card_path).name in text
         )
+        fd_policy = read_policy(self.workspace_dir, getattr(self, "_active_department_round_id", None))
+        if fd_policy and spec.role != "Analyst":
+            # Tool admission evidence avoids accepting a path mentioned only in prose.
+            match = re.search(r"day(\d+)", spec.output_file_path)
+            if match:
+                admitted = accessed_inputs(self.workspace_dir, self.enterprise_spec.enterprise_name,
+                                           spec.role, int(match.group(1)))
+                read_analysis = str(Path(spec.analysis_path).resolve()) in admitted
+                read_state = str(Path(spec.state_path).resolve()) in admitted
+                read_blackboard = str(Path(spec.blackboard_path).resolve()) in admitted
+                read_trade_decision_card = not spec.trade_decision_card_path or str(Path(spec.trade_decision_card_path).resolve()) in admitted
 
         write_called = "name='Write'" in text or 'name="Write"' in text
         write_target_ok = spec.output_file_path in text or spec.output_file_name in text
 
-        # Readback of Output File
+
         read_output_called = (
             ("name='Read'" in text or 'name="Read"' in text)
             and spec.output_file_path in text
@@ -3899,12 +3901,12 @@ After repair:
         json_block = self._extract_last_json_block(text)
         has_json_block = json_block is not None
 
-        # Diagnosis
+
         if not skill_called:
             failure_type = "skill_not_called"
         elif not skill_args_ok:
             failure_type = "skill_args_missing_or_wrong"
-        elif not read_state or not read_blackboard or not read_trade_decision_card:
+        elif not read_state or not read_blackboard or not read_trade_decision_card or (fd_policy and not read_analysis):
             failure_type = "required_reads_incomplete"
         elif has_json_block and not write_called:
             failure_type = "json_printed_but_not_written"
@@ -3935,6 +3937,19 @@ After repair:
     # =========================
     # helper: attempt logging
     # =========================
+
+    def _abort_fatal_model_failure(self, error, options, role, round_id, attempt_idx, messages):
+        fatal = error if isinstance(error, FatalModelError) else classify_model_failure(str(error))
+        if fatal is None:
+            return
+        if not isinstance(error, FatalModelError):
+            fatal = attach_model_failure(fatal, workspace=self.workspace_dir, options=options,
+                                         enterprise_id=self.enterprise_spec.enterprise_id,
+                                         role=role, round_id=round_id)
+        self.session_registry.clear(self.enterprise_spec.enterprise_id, role)
+        self._dump_attempt_messages(self.enterprise_spec.enterprise_name, role, round_id, attempt_idx,
+                                    [*messages, {"role": role, "content": str(fatal)}])
+        raise fatal
 
     def _dump_attempt_messages(
         self,
@@ -4071,16 +4086,17 @@ After repair:
         context_validation_mode = str(
             skill_profile.get("context_validation") or "off"
         )
-        if context_validation_mode in {"warn", "strict"}:
+        if context_validation_mode in {"warn", "strict"} and not read_policy(self.workspace_dir, round_id):
             prompt += (
-                "\n\nStructured context-boundary audit file: "
-                f"{context_audit.get('artifact')}. "
-                "Do not cite scenario-specific fields marked disallowed."
+                f'\n\nStructured context-boundary audit file: {context_audit.get('artifact')}. Do not cite scenario fields marked disallowed.'
             )
         run_started_at = time.time()
         execution_result: Optional[Dict[str, Any]] = None
+        fd_failure_reason = "no valid Agent output"
 
         if strict_context_failure:
+            if read_policy(self.workspace_dir, round_id):
+                raise RuntimeError(f"FD context validation failed: {strict_context_failure}")
             fallback_reason = (
                 "strict context validation blocked Agent execution: "
                 f"{strict_context_failure}"
@@ -4122,11 +4138,13 @@ After repair:
             )
             return all_messages
 
-        # Only re-use the session during a re-test of this task, avoiding going across round/cross-the-board to inherit old cwd and old context.
+
         resume_session_id: Optional[str] = None
 
         max_retry = max(1, int(skill_profile.get("max_retries", 3) or 0))
         default_timeout = max(1, int(dept.timeout or 120))
+        role_completion_enabled = fd_completion_enabled(read_policy(self.workspace_dir, round_id), role, round_id)
+        session_messages: List[dict] = []
 
         while not success and retry_time < max_retry:
             # await global_lock_manager.acquire_department_lock(role)
@@ -4144,27 +4162,49 @@ After repair:
 
             print(f"START-{retry_time} {self.enterprise_spec.enterprise_id} {dept.name}")
 
-            # Each round starts at build_options and then tries to bind the session
+
             options = self.build_options(role)
+            input_attempt_state = {}
+            if not resume_session_id:
+                session_messages = []
+            options = configure_input_access(options, spec, self.workspace_dir, self.client_dir,
+                                             self.enterprise_spec.enterprise_name, round_id,
+                                             attempt_state=input_attempt_state,
+                                             output_validator=(
+                                                 lambda state=input_attempt_state: self._department_completion_error(spec, round_id, state)
+                                             ) if role_completion_enabled else None,
+                                             output_warning_provider=(lambda: self._department_decision_warnings(spec, round_id))
+                                             if read_policy(self.workspace_dir, round_id).get("agent_prompt_policy_version") == FD4_AGENT_PROMPT_VERSION else None)
             options = self._bind_session_to_options(options, resume_session_id)
 
             try:
                 async def stream() -> None:
                     nonlocal session_id_found
 
-                    async for message in query(prompt=prompt, options=options):
-                        record = {
-                            "enterprise_id": self.enterprise_spec.enterprise_id,
-                            "enterprise_name": self.enterprise_spec.enterprise_name,
-                            "role": role,
-                            "content": str(message),
-                        }
-                        attempt_messages.append(record)
-                        all_messages.append(record)
+                    async with aclosing(query(
+                        prompt=input_access_prompt(prompt, self.workspace_dir, round_id),
+                        options=options,
+                    )) as response_stream:
+                        async for message in response_stream:
+                            record = {
+                                "enterprise_id": self.enterprise_spec.enterprise_id,
+                                "enterprise_name": self.enterprise_spec.enterprise_name,
+                                "role": role,
+                                "content": str(message),
+                            }
+                            attempt_messages.append(record)
+                            all_messages.append(record)
 
-                        msg_session_id = getattr(message, "data", {}).get("session_id")
-                        if msg_session_id:
-                            session_id_found = msg_session_id
+                            check_model_message(message, workspace=self.workspace_dir, options=options,
+                                                enterprise_id=self.enterprise_spec.enterprise_id,
+                                                role=role, round_id=round_id)
+
+                            if input_attempt_state.get("loop_reason"):
+                                raise FDInputLoopError(input_attempt_state["loop_reason"])
+
+                            msg_session_id = getattr(message, "data", {}).get("session_id")
+                            if msg_session_id:
+                                session_id_found = msg_session_id
 
                 await asyncio.wait_for(stream(), timeout=timeout)
 
@@ -4187,6 +4227,7 @@ After repair:
                     MultiTenantUtils._normalize_action_file_if_possible(
                         timeout_output_path,
                         dept.dept_id,
+                        allow_legacy_wrapper=bool(read_policy(self.workspace_dir, round_id)),
                     )
                 timeout_output_valid = (
                     MultiTenantUtils._is_valid_json_file(timeout_output_path)
@@ -4202,12 +4243,14 @@ After repair:
                 # timeout. Preserve and execute that valid action instead of discarding
                 # it and paying for another full Agent attempt.
                 recover_from_session_error = not timeout_output_valid
-            except ProcessError as e:
+            except (ProcessError, FDInputLoopError) as e:
+                self._abort_fatal_model_failure(e, options, role, round_id, retry_time + 1, attempt_messages)
+                error_label = "InputAccessLoop" if isinstance(e, FDInputLoopError) else "ProcessError"
                 error_record = {
                     "enterprise_id": self.enterprise_spec.enterprise_id,
                     "enterprise_name": self.enterprise_spec.enterprise_name,
                     "role": role,
-                    "content": f"[ProcessError] role={role}, retry={retry_time}, error={e}",
+                    "content": f"[{error_label}] role={role}, retry={retry_time}, error={e}",
                 }
                 attempt_messages.append(error_record)
                 all_messages.append(error_record)
@@ -4216,6 +4259,7 @@ After repair:
                 session_id_found = ""
                 recover_from_session_error = True
             except Exception as e:
+                self._abort_fatal_model_failure(e, options, role, round_id, retry_time + 1, attempt_messages)
                 error_record = {
                     "enterprise_id": self.enterprise_spec.enterprise_id,
                     "enterprise_name": self.enterprise_spec.enterprise_name,
@@ -4237,6 +4281,7 @@ After repair:
                 # global_lock_manager.release_department_lock(role)
 
             if recover_from_session_error:
+                fd_failure_reason = attempt_messages[-1]["content"]
                 self._dump_attempt_messages(
                     self.enterprise_spec.enterprise_name,
                     role,
@@ -4245,19 +4290,21 @@ After repair:
                     attempt_messages,
                 )
                 prompt = self._build_launch_prompt(spec, round_id, need_trade)
+                prompt += fd_input_retry_context(spec, input_attempt_state)
                 retry_time += 1
                 time_end = time.time()
                 print(
-                    f"END-{retry_time} {self.enterprise_spec.enterprise_id} "
-                    f"{dept.name} elapsed: {time_end - time_start}"
+                    f'END-{retry_time} {self.enterprise_spec.enterprise_id} {dept.name} elapsed: {time_end - time_start}'
                 )
                 continue
 
-            # Save current round session_id
+
             if session_id_found:
+                if resume_session_id and resume_session_id != session_id_found:
+                    session_messages = []
                 resume_session_id = session_id_found
 
-            # Let's see if it's generated.
+
             if advisory_only:
                 has_file = Path(spec.output_file_path).exists()
             else:
@@ -4266,7 +4313,7 @@ After repair:
                     dept.dept_id,
                     round_id,
                 )
-            if not has_file:
+            if not has_file and not role_completion_enabled:
                 self._recover_output_file_from_messages(attempt_messages, spec.output_file_path)
                 has_file = (
                     Path(spec.output_file_path).exists()
@@ -4281,6 +4328,7 @@ After repair:
                 MultiTenantUtils._normalize_action_file_if_possible(
                     Path(spec.output_file_path),
                     dept.dept_id,
+                    allow_legacy_wrapper=bool(read_policy(self.workspace_dir, round_id)),
                 )
             valid_file = (
                 MultiTenantUtils._is_valid_json_file(Path(spec.output_file_path))
@@ -4289,6 +4337,56 @@ After repair:
                 if has_file
                 else False
             )
+
+            if valid_file and read_policy(self.workspace_dir, round_id):
+                admitted = accessed_inputs(self.workspace_dir, self.enterprise_spec.enterprise_name,
+                                           role, round_id)
+                required = [spec.state_path, spec.blackboard_path, spec.analysis_path]
+                if spec.trade_decision_card_path:
+                    required.append(spec.trade_decision_card_path)
+                missing = [value for value in required if str(Path(value).resolve()) not in admitted]
+                if missing:
+                    valid_file = False
+                    fd_failure_reason = "Required authorized reads missing: " + ", ".join(missing)
+                    if not admitted:
+                        fd_failure_reason += (
+                            "; no input access evidence was recorded. Check SDK hook initialization "
+                            "and fd_audit access logs; output is not eligible for execution."
+                        )
+                    failure_record = {
+                        "enterprise_id": self.enterprise_spec.enterprise_id,
+                        "enterprise_name": self.enterprise_spec.enterprise_name,
+                        "role": role, "content": fd_failure_reason,
+                    }
+                    attempt_messages.append(failure_record)
+                    all_messages.append(failure_record)
+                else:
+                    fd_failure_reason = "no valid Agent output"
+            elif not valid_file:
+                fd_failure_reason = (
+                    self._department_output_failure_reason(spec.output_file_path, dept.dept_id)
+                    if not advisory_only
+                    else "Agent advisory output is missing or invalid: " + spec.output_file_path
+                )
+
+            if valid_file and not advisory_only:
+                decision_errors = self._department_decision_errors(spec, round_id)
+                if decision_errors:
+                    valid_file = False
+                    fd_failure_reason = "Decision consistency: " + "; ".join(decision_errors)
+                    failure_record = {
+                        "enterprise_id": self.enterprise_spec.enterprise_id,
+                        "enterprise_name": self.enterprise_spec.enterprise_name,
+                        "role": role, "content": "[DecisionConsistencyFailed] " + fd_failure_reason,
+                    }
+                    attempt_messages.append(failure_record)
+                    all_messages.append(failure_record)
+
+            if valid_file and role_completion_enabled:
+                completion_error = self._department_completion_error(spec, round_id, input_attempt_state)
+                if completion_error:
+                    valid_file = False
+                    fd_failure_reason = completion_error
 
             if has_file and valid_file:
                 if advisory_only:
@@ -4310,6 +4408,7 @@ After repair:
                     if result.get("status") == "success":
                         success = True
                     else:
+                        fd_failure_reason = "Business execution failed: " + str(result)
                         error_file = result.get("file_path", "")
                         prompt = self._next_prompt_by_failure(
                             spec,
@@ -4333,18 +4432,28 @@ After repair:
                         )
                         self._remove_stale_output_file(spec.output_file_path)
             else:
-                # File not generated or action schema invalid: judge the failure type based on transcript and continue to fix in the same session
-                inspection = self._inspect_messages(attempt_messages, spec)
+
+                inspection = self._inspect_messages(
+                    attempt_messages, spec,
+                    session_messages=session_messages if role_completion_enabled else None,
+                )
                 prompt = self._next_prompt_by_failure(
                     spec,
                     round_id,
                     inspection,
                     need_trade=need_trade,
                 )
+                if read_policy(self.workspace_dir, round_id):
+                    prompt += "\n\nController validation failure: " + fd_failure_reason
                 if has_file:
                     self._remove_stale_output_file(spec.output_file_path)
+                    if read_policy(self.workspace_dir, round_id):
+                        prompt += (
+                            """
+The controller deleted the invalid candidate. Correct and Write it again; do not just read back or claim the previous write completed. Use a nonempty flat action array whose entries contain action, action_reason, module_type and executor_id."""
+                        )
 
-                # Recording unoutputed messages so that error can be recorded
+
                 self._dump_attempt_messages(
                     self.enterprise_spec.enterprise_name,
                     role,
@@ -4353,14 +4462,28 @@ After repair:
                     attempt_messages,
                 )
 
+            session_messages.extend(attempt_messages)
             retry_time += 1
             time_end = time.time()
             print(
-                f"END-{retry_time} {self.enterprise_spec.enterprise_id} "
-                f"{dept.name} elapsed: {time_end - time_start}"
+                f'END-{retry_time} {self.enterprise_spec.enterprise_id} {dept.name} elapsed: {time_end - time_start}'
             )
 
         if not success:
+            if read_policy(self.workspace_dir, round_id):
+                self._write_skill_execution_audit(
+                    role=role, department=dept.dept_id, round_id=round_id,
+                    output_file_path=spec.output_file_path, all_messages=all_messages,
+                    attempts=retry_time, success=False, fallback_used=False,
+                    elapsed_seconds=time.time() - run_started_at, context_audit=context_audit,
+                    execution_result={"status": "error", "reason": fd_failure_reason,
+                                      "heuristic_fallback_disabled": True},
+                    phase=phase,
+                )
+                raise RuntimeError(
+                    f"FD Agent decision failed: {role} at round {round_id}; no heuristic substitution. "
+                    f"Reason: {fd_failure_reason}"
+                )
             transport_failure = self._single_enterprise_agent_transport_failure(
                 role=role,
                 round_id=round_id,
@@ -4385,8 +4508,7 @@ After repair:
                 raise RuntimeError(transport_failure["message"])
 
             fallback_reason = (
-                "Agent reasoning timed out; invoked the state-driven fallback: "
-                "continue this round from current orders, inventory, cash, capacity, staffing, and fulfillment state."
+                'Timeout fallback: continue this round using current orders, inventory, cash, capacity, staffing and fulfillment state.'
             )
             if advisory_only:
                 self._write_advisory_fallback_file(spec, fallback_reason)
@@ -4436,8 +4558,7 @@ After repair:
                         spec,
                         dept.dept_id,
                         (
-                            "Agent reasoning timed out; the state-driven fallback action failed execution validation. "
-                            "No new operating commitment is created this round to preserve accounting and state consistency."
+                            'Timeout fallback: the round action failed execution validation. Preserve accounting and state consistency by making no new commitments this round.'
                         ),
                     )
                     execution_result = MultiTenantUtils.execute_enterprise_dept_action(
@@ -4477,6 +4598,9 @@ After repair:
             return hybrid_messages
         spec = self._build_analyst_run_spec(round_id)
         self._active_analyst_round_id = round_id
+        self._active_analyst_observation_path = spec.observation_path
+        self._active_analyst_spec = spec
+        self._analysis_decision_warnings = []
         self._remove_stale_output_file(spec.output_file_path)
 
         success = False
@@ -4484,8 +4608,12 @@ After repair:
         all_messages: List[dict] = []
         prompt = self._build_analyst_launch_prompt(spec, round_id)
         skill_profile = self._skill_profile()
+        completion_guard_enabled = fd_completion_enabled(read_policy(self.workspace_dir, round_id), "Analyst", round_id)
+        session_messages: List[dict] = []
+        attempt_failures: List[dict] = []
+        self._analyst_attempt_failures = attempt_failures
 
-        # Only re-use the session during a re-test of this task, avoiding going across round/cross-the-board to inherit old cwd and old context.
+
         resume_session_id: Optional[str] = None
 
         default_timeout = 240 if self._single_enterprise_agent_run_active() else 120
@@ -4495,6 +4623,8 @@ After repair:
         time_start = time.time()
 
         while not success and retry_time < max_retry:
+            if not resume_session_id:
+                session_messages = []
             attempt_messages: List[dict] = []
             session_id_found: str = resume_session_id or ""
             recover_from_session_error = False
@@ -4508,25 +4638,45 @@ After repair:
             )
 
             options = self.build_options("Analyst")
+            input_attempt_state = {}
+            options = configure_input_access(options, spec, self.workspace_dir, self.client_dir,
+                                             self.enterprise_spec.enterprise_name, round_id,
+                                             attempt_state=input_attempt_state,
+                                             output_validator=(
+                                                 lambda state=input_attempt_state: self._analyst_completion_error(spec, round_id, state)
+                                             ) if completion_guard_enabled else None,
+                                             output_warning_provider=(lambda: self._analyst_fact_warnings(spec, round_id))
+                                             if fd2_fact_audit_policy(read_policy(self.workspace_dir, round_id)) else None)
             options = self._bind_session_to_options(options, resume_session_id)
 
             try:
                 async def stream() -> None:
                     nonlocal session_id_found
 
-                    async for message in query(prompt=prompt, options=options):
-                        record = {
-                            "enterprise_id": self.enterprise_spec.enterprise_id,
-                            "enterprise_name": self.enterprise_spec.enterprise_name,
-                            "role": "Analyst",
-                            "content": str(message),
-                        }
-                        attempt_messages.append(record)
-                        all_messages.append(record)
+                    async with aclosing(query(
+                        prompt=input_access_prompt(prompt, self.workspace_dir, round_id),
+                        options=options,
+                    )) as response_stream:
+                        async for message in response_stream:
+                            record = {
+                                "enterprise_id": self.enterprise_spec.enterprise_id,
+                                "enterprise_name": self.enterprise_spec.enterprise_name,
+                                "role": "Analyst",
+                                "content": str(message),
+                            }
+                            attempt_messages.append(record)
+                            all_messages.append(record)
 
-                        msg_session_id = getattr(message, "data", {}).get("session_id")
-                        if msg_session_id:
-                            session_id_found = msg_session_id
+                            check_model_message(message, workspace=self.workspace_dir, options=options,
+                                                enterprise_id=self.enterprise_spec.enterprise_id,
+                                                role="Analyst", round_id=round_id)
+
+                            if input_attempt_state.get("loop_reason"):
+                                raise FDInputLoopError(input_attempt_state["loop_reason"])
+
+                            msg_session_id = getattr(message, "data", {}).get("session_id")
+                            if msg_session_id:
+                                session_id_found = msg_session_id
 
                 await asyncio.wait_for(stream(), timeout=timeout)
 
@@ -4545,13 +4695,20 @@ After repair:
                 self.session_registry.clear(self.enterprise_spec.enterprise_id, "Analyst")
                 resume_session_id = ""
                 session_id_found = ""
-                recover_from_session_error = True
-            except ProcessError as e:
+                # FD output may be ready before the CLI closes its result stream.
+                # Authorized input evidence is still checked below before acceptance.
+                recover_from_session_error = not (
+                    read_policy(self.workspace_dir, round_id)
+                    and self._is_valid_json_file(spec.output_file_path)
+                )
+            except (ProcessError, FDInputLoopError) as e:
+                self._abort_fatal_model_failure(e, options, "Analyst", round_id, retry_time + 1, attempt_messages)
+                error_label = "InputAccessLoop" if isinstance(e, FDInputLoopError) else "ProcessError"
                 error_record = {
                     "enterprise_id": self.enterprise_spec.enterprise_id,
                     "enterprise_name": self.enterprise_spec.enterprise_name,
                     "role": "Analyst",
-                    "content": f"[ProcessError] role=Analyst, retry={retry_time}, error={e}",
+                    "content": f"[{error_label}] role=Analyst, retry={retry_time}, error={e}",
                 }
                 attempt_messages.append(error_record)
                 all_messages.append(error_record)
@@ -4560,6 +4717,7 @@ After repair:
                 session_id_found = ""
                 recover_from_session_error = True
             except Exception as e:
+                self._abort_fatal_model_failure(e, options, "Analyst", round_id, retry_time + 1, attempt_messages)
                 error_record = {
                     "enterprise_id": self.enterprise_spec.enterprise_id,
                     "enterprise_name": self.enterprise_spec.enterprise_name,
@@ -4577,6 +4735,8 @@ After repair:
                 recover_from_session_error = True
 
             if recover_from_session_error:
+                if read_policy(self.workspace_dir, round_id):
+                    self._last_analysis_validation_error = attempt_messages[-1]["content"]
                 self._dump_attempt_messages(
                     self.enterprise_spec.enterprise_name,
                     "Analyst",
@@ -4585,20 +4745,24 @@ After repair:
                     attempt_messages,
                 )
                 prompt = self._build_analyst_launch_prompt(spec, round_id)
+                prompt += fd_input_retry_context(spec, input_attempt_state)
                 retry_time += 1
                 continue
 
-            # Save session_id, follow-up priority with session continued
+
             if session_id_found:
+                if session_id_found != resume_session_id:
+                    session_messages = []
                 resume_session_id = session_id_found
 
-            # Determines whether analysis.json is generated and legal
+
             output_path = Path(spec.output_file_path)
             has_file = output_path.exists()
             if not has_file:
-                self._recover_output_file_from_messages(attempt_messages, spec.output_file_path)
+                if not completion_guard_enabled:
+                    self._recover_output_file_from_messages(attempt_messages, spec.output_file_path)
                 has_file = output_path.exists()
-            if not has_file:
+            if not has_file and not completion_guard_enabled:
                 legacy_source = self._recover_analyst_output_from_legacy_path(
                     spec,
                     attempt_messages,
@@ -4618,6 +4782,27 @@ After repair:
                     all_messages.append(recovery_record)
                 has_file = output_path.exists()
             valid_file = self._is_valid_json_file(spec.output_file_path) if has_file else False
+            if valid_file and completion_guard_enabled:
+                completion_error = self._analyst_completion_error(spec, round_id, input_attempt_state)
+                if completion_error:
+                    valid_file = self._set_analysis_validation_error(completion_error)
+
+            if valid_file and read_policy(self.workspace_dir, round_id):
+                admitted = accessed_inputs(
+                    self.workspace_dir, self.enterprise_spec.enterprise_name, "Analyst", round_id,
+                )
+                required = [spec.observation_path]
+                if spec.chart_export_enabled and Path(spec.chart_export_path).is_file():
+                    required.append(spec.chart_export_path)
+                if not spec.compact_observation_enabled and Path(spec.history_projection_path).is_file():
+                    required.append(spec.history_projection_path)
+                missing = [value for value in required if str(Path(value).resolve()) not in admitted]
+                if missing:
+                    valid_file = self._set_analysis_validation_error(
+                        "Required authorized Analyst reads missing: " + ", ".join(missing)
+                        + ("; no input access evidence was recorded. Check SDK hook initialization "
+                           "and fd_audit access logs." if not admitted else "")
+                    )
 
             if has_file and valid_file:
                 success = True
@@ -4639,12 +4824,46 @@ After repair:
                     }
                     attempt_messages.append(validation_record)
                     all_messages.append(validation_record)
-                inspection = self._inspect_analyst_messages(attempt_messages, spec)
-                prompt = self._next_analyst_prompt_by_failure(spec, round_id, inspection)
+                inspection = self._inspect_analyst_messages(
+                    attempt_messages, spec,
+                    session_messages=session_messages if completion_guard_enabled else None,
+                )
+                if not has_file and read_policy(self.workspace_dir, round_id):
+                    self._last_analysis_validation_error = ""
+                    prompt = self._next_analyst_prompt_by_failure(spec, round_id, inspection)
+                    self._last_analysis_validation_error = (
+                        "analysis.json was not created at the required output path; "
+                        f"tool inspection: {inspection.failure_type}"
+                    )
+                    if completion_guard_enabled and attempt_failures:
+                        self._last_analysis_validation_error += (
+                            "; previous attempt: " + attempt_failures[-1]["reason"]
+                        )
+                    failure_record = {
+                        "enterprise_id": self.enterprise_spec.enterprise_id,
+                        "enterprise_name": self.enterprise_spec.enterprise_name,
+                        "role": "Analyst",
+                        "content": f"[AnalysisValidationFailed] {self._last_analysis_validation_error}",
+                    }
+                    attempt_messages.append(failure_record)
+                    all_messages.append(failure_record)
+                else:
+                    prompt = self._next_analyst_prompt_by_failure(spec, round_id, inspection)
+                if completion_guard_enabled:
+                    attempt_failures.append({"attempt": retry_time + 1,
+                        "failure_type": inspection.failure_type,
+                        "reason": self._last_analysis_validation_error,
+                        "completion_failures": input_attempt_state.get("completion_failures") or []})
+                    prompt += (
+                        """
+Candidate failure record (repair evidence, not business facts): """
+                        + json.dumps(attempt_failures[-2:], ensure_ascii=False)
+                        + f'\nWrite the full corrected candidate to {spec.output_file_path} and Read it back; explanations or partial reference arrays are not delivery.'
+                    )
                 if has_file:
                     self._remove_stale_output_file(spec.output_file_path)
 
-                # It's easy to make mistakes.
+
                 self._dump_attempt_messages(
                     self.enterprise_spec.enterprise_name,
                     "Analyst",
@@ -4653,6 +4872,7 @@ After repair:
                     attempt_messages,
                 )
 
+            session_messages.extend(attempt_messages)
             retry_time += 1
 
         time_end = time.time()
@@ -4668,6 +4888,7 @@ After repair:
             if (
                 transport_failure is None
                 and self._long_run_agent_failure_continuation_enabled()
+                and not read_policy(self.workspace_dir, round_id)
             ):
                 fallback_used = MultiTenantUtils._write_fallback_enterprise_analysis(
                     self.enterprise_spec.enterprise_name,
@@ -4721,6 +4942,15 @@ After repair:
             )
 
         self._active_analyst_round_id = None
+        self._active_analyst_observation_path = None
+        self._active_analyst_spec = None
         if transport_failure:
             raise RuntimeError(transport_failure["message"])
+        if not success and read_policy(self.workspace_dir, round_id):
+            reason = getattr(self, "_last_analysis_validation_error", "") or "no valid analysis output"
+            raise RuntimeError(
+                f"Analyst analysis validation failed for {self.enterprise_spec.enterprise_name} "
+                f"at round {round_id} after {retry_time} attempts: {reason}. "
+                f"Output: {spec.output_file_path}"
+            )
         return all_messages

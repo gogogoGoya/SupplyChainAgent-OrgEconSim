@@ -1,0 +1,20 @@
+{
+  "action_name": "action_pass",
+  "description": "Record a state-supported decision not to act this round; this is not an automatic fallback.",
+  "required_parameters": [],
+  "parameter_constraints": [
+    "action_param must be a nonempty reason string, not an object.",
+    "Use current authorized evidence to decide whether passing is appropriate; do not pass merely because a tool failed."
+  ],
+  "output_example": [
+    {
+      "action": {
+        "action_name": "action_pass",
+        "action_param": "REPLACE_WITH_CURRENT_STATE_REASON"
+      },
+      "action_reason": "REPLACE_WITH_CURRENT_STATE_REASON",
+      "module_type": "HRManager",
+      "executor_id": "REPLACE_WITH_CURRENT_ENTERPRISE_NAME"
+    }
+  ]
+}

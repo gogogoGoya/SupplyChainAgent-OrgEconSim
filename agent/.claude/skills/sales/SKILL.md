@@ -228,9 +228,9 @@ Shared-resource tendencies:
 
 # 8. Final JSON structure
 
-The final file must have an outermost array of length exactly one.
+The final file must be a nonempty, flat array of action objects. Put multiple actions in execution order; do not wrap the action array in another array.
 
-Its first element is an action array. Each action item must contain `action`, `action_reason`, `module_type`, and `executor_id`.
+Each action item must contain `action`, `action_reason`, `module_type`, and `executor_id`.
 
 For an executable action:
 - `action` must contain:
@@ -250,7 +250,7 @@ For a pass:
 Use the empty string `""` when no request value is applicable.
 
 Required shape:
-[ ACTIONS_ARRAY ]
+[ ACTION_ITEM, ... ]
 
 Where:
 ACTIONS_ARRAY = [ ACTION_ITEM, ... ]

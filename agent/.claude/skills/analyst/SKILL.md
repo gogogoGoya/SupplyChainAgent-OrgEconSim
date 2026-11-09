@@ -111,7 +111,7 @@ Write one object with exactly these top-level fields:
 }
 ```
 
-Keep the existing field name `enterprise_summarys` exactly. `enterprise_name` and `round_id` must match current state. Sales and procurement targets are always present; production is present under the condition stated above. Do not add unrelated fields or placeholders.
+Keep the existing field name `enterprise_summarys` exactly. `enterprise_name` and `round_id` must match current state. Sales and procurement targets are always present; production is present under the condition stated above. Do not add unrelated fields or placeholders. Runtime extensions explicitly required by the startup or recovery prompt are defined fields and must be retained, such as `decision_check` within a target object. The generic example above does not exclude these extensions. Use the exact object structure specified for evidence references; do not replace reference objects with strings.
 
 Before and after writing, verify required fields, time-bounded targets, measurable evaluations, evidence-based reasons, strict JSON, absence of Markdown, and exact read-back equality.
 

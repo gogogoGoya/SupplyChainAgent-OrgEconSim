@@ -1,0 +1,38 @@
+{
+  "schema_version": "firm_ablation_baselines.v1",
+  "baselines": {
+    "bullwhip": {
+      "source_run_id": "run_5ce2a8bfd692",
+      "source_scenario_id": "beer_game_profit_objective",
+      "source_meta_path": "agent/workspace_jobs/run_5ce2a8bfd692__started_2026-07-14T10_16_05_beer_game_C3/run_meta.json",
+      "snapshot_file": "bullwhip.json",
+      "snapshot_sha256": "e68cf53cfe65e17a5fc6d0de550e722f758b1685fc523c6aac128ba67a7f71ab",
+      "config_sha256": "a3eb69cb8b65af652dccf462cfe45aa52dcd7c32f566b5c5f562d2000c540865",
+      "completed_steps": 40,
+      "status": "completed",
+      "source_meta_sha256": "6ee459a6bc38be8dd0ef76ae9b67e47767ff41319cc6102495d38d77c5abf635"
+    },
+    "herding_visible": {
+      "source_run_id": "run_3de36a732d15",
+      "source_scenario_id": "herding_peer_visible_profit_objective",
+      "source_meta_path": "agent/workspace_jobs/run_3de36a732d15__started_2026-07-14T15_32_37_herding_peer_C3/run_meta.json",
+      "snapshot_file": "herding_visible.json",
+      "snapshot_sha256": "dc9e4f231c3f0f28ad012cdbd4ac80082168296789148bb823ca2db706b8e859",
+      "config_sha256": "a1169db613ee9172aec8eea4fd3d9c0acf8021f9e22e07e9069627ed913e27fc",
+      "completed_steps": 40,
+      "status": "completed",
+      "source_meta_sha256": "dd89e4097af68929134aeb9270308244b9b0a7cbee4e9807773011de2d95805f"
+    },
+    "herding_hidden": {
+      "source_run_id": "run_ea0b3e99448f",
+      "source_scenario_id": "herding_no_peer_visibility_profit_objective",
+      "source_meta_path": "agent/workspace_jobs/run_ea0b3e99448f__started_2026-07-14T14_09_34_herding_nopeer_C3/run_meta.json",
+      "snapshot_file": "herding_hidden.json",
+      "snapshot_sha256": "94eeafcbf949e0348107d6d50c5104c5e3d70735f702b350990cc53e8b1933b6",
+      "config_sha256": "8d0375eb27ec4c92e4c7cd3750766f84de4a7a6b829cab24886a6b7dae7f6a5f",
+      "completed_steps": 40,
+      "status": "completed",
+      "source_meta_sha256": "b21211cf495e7d1435c256a13178877bcd207324ab774a4d19d261b5de012896"
+    }
+  }
+}

@@ -1,5 +1,9 @@
+import LoadingState from './LoadingState';
+import {setReviewChart} from '../utils/chartReview';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import * as echarts from 'echarts';
+import * as echarts from '../utils/echartsRuntime';
+import {getArtifactReview,getArtifactView} from '../utils/operationsApi';
+import {reviewLocation,displayMetric} from '../utils/reviewDisplay';
 import { buildDataUrl, safeFetchJson } from '../utils/dataSource';
 
 const ENTERPRISE_COLORS = {
@@ -40,9 +44,9 @@ const formatNumber = (value, digits = 0) => new Intl.NumberFormat('en-US', {
 
 const formatCurrencyCompact = (value) => {
   const numeric = toNumber(value);
-  if (Math.abs(numeric) >= 1000000) return `¥${formatNumber(numeric / 1000000, 2)}M`;
-  if (Math.abs(numeric) >= 1000) return `¥${formatNumber(numeric / 1000, 1)}K`;
-  return `¥${formatNumber(numeric)}`;
+  if (Math.abs(numeric) >= 1000000) return `SCU ${formatNumber(numeric / 1000000, 2)}M`;
+  if (Math.abs(numeric) >= 1000) return `SCU ${formatNumber(numeric / 1000, 1)}K`;
+  return `SCU ${formatNumber(numeric)}`;
 };
 
 const chunkedLoad = async (turns, loader, chunkSize = 20) => {
@@ -92,7 +96,7 @@ const buildEventMarkLines = (rows) => {
       events.push({
         ...event,
         eventId,
-        name: event.label || eventId,
+        name: ({upstream_material_price_surge:'Material price increase',manufacturing_conversion_cost_surge:'Conversion-cost shock',import_trade_logistics_tightening:'Trade and logistics tightening',cost_normalization_and_demand_softening:'Demand softening and cost relief'})[event.event_id] || event.label || eventId,
         xAxis: Number(event.turn ?? row.turn),
       });
     });
@@ -158,7 +162,7 @@ const formatFactorSummary = (event) => {
 
 const EvolutionExperimentView = ({ availableDays = [], dataRoot, enterpriseSpecs = [] }) => {
   const [rows, setRows] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(true);const [error,setError]=useState('');const [reload,setReload]=useState(0);
   const factorRef = useRef(null);
   const revenueRef = useRef(null);
   const tradeRef = useRef(null);
@@ -170,6 +174,11 @@ const EvolutionExperimentView = ({ availableDays = [], dataRoot, enterpriseSpecs
   const enterpriseIds = useMemo(() => (
     enterpriseSpecs.map((item) => item.enterprise_id || item.id).filter(Boolean)
   ), [enterpriseSpecs]);
+  const [healthReview,setHealthReview]=useState(null);
+  useEffect(()=>{let active=true;const {source,name}=reviewLocation(dataRoot);
+    getArtifactReview(source,name).then(r=>{if(active)setHealthReview(r.data?.execution?.metrics?.all_agent_timeout_rounds||null);});
+    return()=>{active=false;};
+  },[dataRoot]);
   const visibleEnterpriseIds = enterpriseIds.length
     ? enterpriseIds
     : ['Supplier', 'Manufacturer', 'Distributor', 'Retailer'];
@@ -177,21 +186,28 @@ const EvolutionExperimentView = ({ availableDays = [], dataRoot, enterpriseSpecs
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
-      setLoading(true);
-      const loaded = await chunkedLoad(availableDays, (turn) => readTurn(dataRoot, turn));
+      setLoading(true);setError('');
+      try{
+      const {source,name}=reviewLocation(dataRoot);const result=await getArtifactView(source,name,'evolution',{forceRefresh:reload>0});
+      if(result.error&&result.status!==404)throw new Error(result.error);
+      if(result.data&&!['available','not_recorded','not_published'].includes(result.data.availability))throw new Error('The long-run projection is invalid or changed. Republish this archive.');
+      const fast=result.data?.availability==='available'?result.data.data:null;
+      const days=new Set(availableDays);
+      const loaded = fast?fast.rows.filter(row=>days.has(row.turn)):await chunkedLoad(availableDays, (turn) => readTurn(dataRoot, turn));
       if (!cancelled) {
         setRows(loaded);
-        setLoading(false);
       }
+      }catch(error){if(!cancelled)setError(error.message);}
+      finally{if(!cancelled)setLoading(false);}
     };
     load();
     return () => { cancelled = true; };
-  }, [availableDays.join(','), dataRoot]);
+  }, [availableDays.join(','), dataRoot,reload]);
 
   useEffect(() => {
     chartsRef.current.forEach((chart) => chart?.dispose());
     chartsRef.current = [];
-    if (!rows.length) return undefined;
+    if (!rows.length||!factorRef.current) return undefined;
 
     const turns = rows.map((row) => row.turn);
     const eventLines = buildEventMarkLines(rows);
@@ -205,10 +221,12 @@ const EvolutionExperimentView = ({ availableDays = [], dataRoot, enterpriseSpecs
     const baseOption = {
       animation: false,
       tooltip: { trigger: 'axis' },
-      grid: { left: 64, right: 42, top: 52, bottom: 48 },
+      grid: { left: 64, right: 54, top: 76, bottom: 60 },
       xAxis: {
         type: 'category',
-        name: 'Turn',
+        name: 'Round',
+        nameLocation: 'middle',
+        nameGap: 32,
         data: turns,
         axisLabel: { hideOverlap: true },
       },
@@ -216,7 +234,7 @@ const EvolutionExperimentView = ({ availableDays = [], dataRoot, enterpriseSpecs
     };
 
     const factorChart = echarts.init(factorRef.current);
-    factorChart.setOption({
+    setReviewChart(factorChart, {
       ...baseOption,
       legend: { top: 4 },
       yAxis: { type: 'value', name: 'Relative to Baseline', axisLabel: { formatter: '{value}x' } },
@@ -236,7 +254,7 @@ const EvolutionExperimentView = ({ availableDays = [], dataRoot, enterpriseSpecs
     });
 
     const revenueChart = echarts.init(revenueRef.current);
-    revenueChart.setOption({
+    setReviewChart(revenueChart, {
       ...baseOption,
       legend: { top: 4 },
       yAxis: { type: 'value', name: 'Cumulative Revenue', axisLabel: { formatter: (value) => `${value / 1000}K` } },
@@ -253,7 +271,7 @@ const EvolutionExperimentView = ({ availableDays = [], dataRoot, enterpriseSpecs
     });
 
     const tradeChart = echarts.init(tradeRef.current);
-    tradeChart.setOption({
+    setReviewChart(tradeChart, {
       ...baseOption,
       legend: { top: 4 },
       yAxis: [
@@ -280,7 +298,7 @@ const EvolutionExperimentView = ({ availableDays = [], dataRoot, enterpriseSpecs
     });
 
     const serviceChart = echarts.init(serviceRef.current);
-    serviceChart.setOption({
+    setReviewChart(serviceChart, {
       ...baseOption,
       legend: { top: 4 },
       yAxis: {
@@ -314,7 +332,7 @@ const EvolutionExperimentView = ({ availableDays = [], dataRoot, enterpriseSpecs
       cumulativeDirectRates.push(cumulativeValid ? (cumulativeDirect / cumulativeValid) * 100 : null);
     });
     const qualityChart = echarts.init(qualityRef.current);
-    qualityChart.setOption({
+    setReviewChart(qualityChart, {
       ...baseOption,
       legend: { top: 4 },
       yAxis: {
@@ -326,7 +344,7 @@ const EvolutionExperimentView = ({ availableDays = [], dataRoot, enterpriseSpecs
       },
       series: [
         {
-          name: 'Per-Turn Direct Completion',
+          name: 'Per-Round Direct Completion',
           type: 'line',
           step: 'end',
           showSymbol: false,
@@ -344,7 +362,7 @@ const EvolutionExperimentView = ({ availableDays = [], dataRoot, enterpriseSpecs
     });
 
     const responseChart = echarts.init(responseRef.current);
-    responseChart.setOption({
+    setReviewChart(responseChart, {
       ...baseOption,
       legend: { top: 4 },
       yAxis: { type: 'value', name: 'Actions in Prior 5 Turns', minInterval: 1 },
@@ -390,8 +408,9 @@ const EvolutionExperimentView = ({ availableDays = [], dataRoot, enterpriseSpecs
     const audit = getAuditStats(row);
     return { valid: totals.valid + audit.valid, direct: totals.direct + audit.direct };
   }, { valid: 0, direct: 0 });
-  const directRate = auditTotals.valid ? (auditTotals.direct / auditTotals.valid) * 100 : 0;
-  const allTimeoutTurns = rows.filter((row) => row.runtimeHealth?.all_agent_calls_timed_out).length;
+  const directRate = auditTotals.valid ? (auditTotals.direct / auditTotals.valid) * 100 : null;
+  const knownHealth=rows.filter(row=>typeof row.runtimeHealth?.all_agent_calls_timed_out==='boolean');
+  const allTimeoutTurns=knownHealth.length===rows.length?knownHealth.filter(row=>row.runtimeHealth.all_agent_calls_timed_out).length:null;
   const eventResponses = eventLines.map((event) => ({
     ...event,
     responseActions: sumAllActions(rows.filter(
@@ -413,6 +432,8 @@ const EvolutionExperimentView = ({ availableDays = [], dataRoot, enterpriseSpecs
     return {
       ...phase,
       index,
+      loadedRounds: phaseRows.length,
+      expectedRounds: phase.end - phase.start + 1,
       actions: sumAllActions(phaseRows),
       newOrders: endTrade.orderCount - previousTrade.orderCount,
       tradeValue: endTrade.orderValue - previousTrade.orderValue,
@@ -422,16 +443,18 @@ const EvolutionExperimentView = ({ availableDays = [], dataRoot, enterpriseSpecs
     };
   }).filter((phase) => phase.actions || phase.newOrders || phase.index === 0);
 
+  if(error)return <section className="view-error" role="alert"><h3>Long-run review unavailable</h3><p>{error}</p><button onClick={()=>setReload(v=>v+1)}>Retry long-run review</button></section>;
   if (loading) {
-    return <div className="loading">Loading long-horizon evolution data...</div>;
+    return <LoadingState label="Loading long-horizon evolution data…" variant="chart"/>;
   }
 
   return (
     <div className="evolution-view">
+      {rows.length !== Number(latestMetrics.completed_steps ?? availableDays.length) && <p className="review-coverage-note">Loaded {rows.length} recorded snapshots of {latestMetrics.completed_steps ?? availableDays.length} declared rounds. Action, timeout and response counts use the loaded snapshots; transaction totals use cumulative endpoint records.</p>}
       <section className="evolution-summary-band">
-        <div><span>Completed Run</span><strong>{latestMetrics.completed_steps || rows.length} / {latestMetrics.planned_total_steps || 200}</strong></div>
-        <div><span>Department Agent Direct Completion</span><strong>{formatNumber(directRate, 1)}%</strong></div>
-        <div><span>All-Agent Timeout Turns</span><strong>{allTimeoutTurns}</strong></div>
+        <div><span>Completed Run</span><strong>{latestMetrics.completed_steps ?? rows.length} / {latestMetrics.planned_total_steps ?? 200}</strong></div>
+        <div><span>Department Agent Direct Completion</span><strong>{directRate==null?'Not recorded':`${formatNumber(directRate,1)}%`}</strong></div>
+        <div><span>All-Agent Timeout Turns</span><strong>{healthReview?.value!=null?displayMetric(healthReview):allTimeoutTurns==null?'Not recorded':allTimeoutTurns}</strong></div>
         <div><span>Operating Actions</span><strong>{formatNumber(totalActions)}</strong></div>
         <div><span>B2B Transactions</span><strong>{formatNumber(latestTrade.orderCount)}</strong></div>
         <div><span>B2B Transaction Value</span><strong>{formatCurrencyCompact(latestTrade.orderValue)}</strong></div>
@@ -440,12 +463,12 @@ const EvolutionExperimentView = ({ availableDays = [], dataRoot, enterpriseSpecs
       <section className="evolution-event-strip">
         {eventResponses.length ? eventResponses.map((event) => (
           <div key={`${event.xAxis}:${event.name}`}>
-            <span>Turn {event.xAxis}</span>
+            <span>Round {event.xAxis}</span>
             <strong>{event.name}</strong>
             <small>{formatFactorSummary(event)}</small>
             <small>{formatNumber(event.responseActions)} operating responses in the next 10 turns</small>
           </div>
-        )) : <p>Triggered external changes appear here from Turn 40 onward.</p>}
+        )) : <p>Triggered external changes appear here from Round 40 onward.</p>}
       </section>
 
       <section className="evolution-phase-table-wrap">
@@ -456,7 +479,8 @@ const EvolutionExperimentView = ({ availableDays = [], dataRoot, enterpriseSpecs
               <tr>
                 <th>Phase</th>
                 <th>Strategic Orientation</th>
-                <th>Operating Actions</th>
+                <th>Snapshot Coverage</th>
+                <th>Recorded Operating Actions</th>
                 <th>New B2B Orders</th>
                 <th>New Transaction Value</th>
                 <th>Mean B2B Fulfillment Rate</th>
@@ -465,8 +489,9 @@ const EvolutionExperimentView = ({ availableDays = [], dataRoot, enterpriseSpecs
             <tbody>
               {phaseSummaries.map((phase) => (
                 <tr key={phase.name}>
-                  <td><strong>{phase.name}</strong><small>Turn {phase.start}-{phase.end}</small></td>
+                  <td><strong>{phase.name}</strong><small>Round {phase.start}-{phase.end}</small></td>
                   <td>{phase.strategy}</td>
+                  <td>{phase.loadedRounds} / {phase.expectedRounds}</td>
                   <td>{formatNumber(phase.actions)}</td>
                   <td>{formatNumber(phase.newOrders)}</td>
                   <td>{formatCurrencyCompact(phase.tradeValue)}</td>

@@ -1,5 +1,6 @@
+import LoadingState from './LoadingState';
 import React, { useState, useEffect } from 'react';
-import { buildDataUrl, safeFetchText } from '../utils/dataSource';
+import { buildDataUrl, safeFetchText, safeFetchJson } from '../utils/dataSource';
 
 const CompanyInfo = ({ company, day, dataRoot }) => {
   const [info, setInfo] = useState(null);
@@ -7,43 +8,46 @@ const CompanyInfo = ({ company, day, dataRoot }) => {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    loadCompanyInfo();
-  }, [company, day, dataRoot]);
-
-  const loadCompanyInfo = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-
-      const text = await safeFetchText(
-        buildDataUrl(dataRoot, `enterprises/${company}/observations/observation_day${day}.txt`)
-      );
-      if (!text) {
-        throw new Error('Unable to load observation data');
+    let active = true;
+    const load = async () => {
+      setLoading(true); setError(null); setInfo(null);
+      try {
+        const text = await safeFetchText(buildDataUrl(dataRoot, `enterprises/${company}/observations/observation_day${day}.txt`));
+        let data = text ? JSON.parse(text) : null;
+        if (!data) {
+          const meta = await safeFetchJson(buildDataUrl(dataRoot, 'run_meta.json'));
+          const stage = day < Number(meta?.prewarm_rounds || 0) ? 'prewarm_end_of_day' : 'end_of_day';
+          const snapshot = await safeFetchJson(buildDataUrl(dataRoot, `public/observer_state/day${day}/${stage}/${company}.json`));
+          data = snapshot?.observation || snapshot?.data?.observation;
+        }
+        if (!data) {
+          const finance = await safeFetchJson(buildDataUrl(dataRoot, `enterprises/${company}/department/finance/day${day}/finance.json`));
+          if (finance?.self_state) data = {finance: finance.self_state};
+        }
+        if (active) setInfo(data);
+      } catch (error) {
+        if (active) setError('The recorded observation could not be parsed: ' + error.message);
+      } finally {
+        if (active) setLoading(false);
       }
-      const data = JSON.parse(text);
-      setInfo(data);
-    } catch (error) {
-      console.error('Failed to load enterprise information:', error);
-      setError('Failed to load enterprise information: ' + error.message);
-    } finally {
-      setLoading(false);
-    }
-  };
+    };
+    load();
+    return () => {active = false;};
+  }, [company, day, dataRoot]);
 
   const formatCurrency = (value) => {
     if (value === null || value === undefined || value === '') {
-      return '¥-';
+      return 'Not recorded';
     }
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) {
-      return '¥-';
+      return 'Not recorded';
     }
-    return `¥${new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(numeric)}`;
+    return `SCU ${new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(numeric)}`;
   };
 
   if (loading) {
-    return <div className="loading">Loading...</div>;
+    return <LoadingState label="Loading enterprise state…" variant="compact"/>;
   }
 
   if (error) {
@@ -51,7 +55,7 @@ const CompanyInfo = ({ company, day, dataRoot }) => {
   }
 
   if (!info) {
-    return <div className="loading">No data available</div>;
+    return <div className="loading">No enterprise observation was published for this round.</div>;
   }
 
   const finance = info.finance?.self_state || info.finance || {};
@@ -65,20 +69,20 @@ const CompanyInfo = ({ company, day, dataRoot }) => {
       </div>
       <div className="metric-card">
         <div className="metric-label">Cash balance</div>
-        <div className="metric-value">{formatCurrency(finance.cash || 0)}</div>
+        <div className="metric-value">{formatCurrency(finance.cash)}</div>
       </div>
       <div className="metric-card">
         <div className="metric-label">Total revenue</div>
-        <div className="metric-value">{formatCurrency(finance.total_revenue || 0)}</div>
+        <div className="metric-value">{formatCurrency(finance.total_revenue)}</div>
       </div>
       <div className="metric-card">
         <div className="metric-label">Total cost</div>
-        <div className="metric-value">{formatCurrency(finance.total_cost || 0)}</div>
+        <div className="metric-value">{formatCurrency(finance.total_cost)}</div>
       </div>
       {Object.keys(financialIndicators).length > 0 && (
         <div className="metric-card">
           <div className="metric-label">Net profit</div>
-          <div className="metric-value">{formatCurrency(financialIndicators.net_profit || 0)}</div>
+          <div className="metric-value">{formatCurrency(financialIndicators.net_profit)}</div>
         </div>
       )}
     </div>

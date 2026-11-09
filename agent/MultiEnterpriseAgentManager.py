@@ -38,6 +38,7 @@ from config.simulation_preset_config import (
 )
 from config.integration_profiles import get_scenario_integration_profiles
 from config.environment_config import EnvironmentConfig
+from core.model_failure import abort_on_fatal_model_error, gather_model_tasks
 from persistence.sql_mirror_runtime import (
     get_sql_mirror_repository,
     mirror_config_version_if_enabled,
@@ -72,19 +73,11 @@ def _materialize_market_config_snapshot(
     return materialized
 
 # ============================================================
-# multi-enterprise Master Manager
+
 # ============================================================
 
 class MultiEnterpriseClaudeManager:
-    """
-    multi-enterprise Master Manager
-
-    Core functions:
-    - Holds multiple Enterprise Runtime
-    World day
-    - and dispatch multiple enterprisex3/>
-    - Manage parameter / workspace 
-        """
+    '\n    multi-enterprise Master Manager\n\n    Core functions:\n    - Holds multiple Enterprise Runtime\n    World day\n    - and dispatch multiple enterprisex3/>\n    - Manage parameter / workspace \n        '
 
     def __init__(
         self,
@@ -172,7 +165,7 @@ class MultiEnterpriseClaudeManager:
         return resolved[:enterprise_count]
 
     # ----------------------------
-    # World Schedule
+
     # ----------------------------
 
     async def run_one_day(self, round_id: int) -> Dict[str, List[dict]]:
@@ -207,9 +200,13 @@ class MultiEnterpriseClaudeManager:
             enterprise_id: asyncio.create_task(run_enterprise_with_semaphore(enterprise_id, rt))
             for enterprise_id, rt in self.runtimes.items()
         }
-        await asyncio.gather(*tasks.values()) 
+        await gather_model_tasks(*tasks.values())
+        # Legacy architecture controls defer dispatch. SA v2 already dispatches
+        # inside each enterprise workflow, matching the original C3 stage order.
+        for runtime in self.runtimes.values():
+            await runtime.dispatch_firm_phase(round_id, "decision")
 
-        # Recheck the order once again during the round after all operations have been performed at least once, allowing department sales/procurement to confirm feedback on the order requirement
+
         StaticUtils.check_orders()
         if retain_intermediate_exchange:
             MultiTenantUtils.save_exchange_info(round_id, "after_check_orders")
@@ -220,8 +217,10 @@ class MultiEnterpriseClaudeManager:
             enterprise_id: asyncio.create_task(run_trade_with_semaphore(enterprise_id, rt))
             for enterprise_id, rt in self.runtimes.items()
         }
-        await asyncio.gather(*trade_tasks.values()) 
-        # Call exchange for statistics
+        await gather_model_tasks(*trade_tasks.values())
+        for runtime in self.runtimes.values():
+            await runtime.dispatch_firm_phase(round_id, "trade")
+
         StaticUtils.statistics_orders()
         MultiTenantUtils.save_exchange_info(round_id, "end_of_day")
         if retention.get("deduplicate_end_of_day_exchange_alias", False):
@@ -838,6 +837,7 @@ class MultiEnterpriseClaudeManager:
             "all_agent_calls_timed_out": all_timed_out,
         }
         
+    @abort_on_fatal_model_error
     async def run(
         self,
         max_step: Optional[int] = None,
@@ -1087,8 +1087,7 @@ class MultiEnterpriseClaudeManager:
                 stop_reason = {
                     "type": "agent_timeout_circuit_breaker",
                     "message": (
-                        "All agent calls exhausted their timeout retries for consecutive complete rounds. "
-                        "The run was paused at a complete checkpoint and can resume after the model service or prompt context is corrected."
+                        'Every Agent call exhausted timeout retries over consecutive complete rounds. Paused at a complete checkpoint; resume after restoring model service or improving bounded context.'
                     ),
                     "policy": "seal_last_complete_round",
                     "completed_steps": effective_total_steps,
@@ -1351,7 +1350,7 @@ def build_demo_specs() -> List[EnterpriseSpec]:
     return enterprise_specs
 
 # ============================================================
-# Run Entry
+
 # ============================================================
 
 def resolve_agent_run_steps(default_steps: int) -> int:

@@ -14,8 +14,8 @@ DECISION_GROUPS = ("C1", "C2", "C3")
 
 FAMILY_METRIC_CONTRACTS: Dict[str, Dict[str, Any]] = {
     "bullwhip": {
-        "name": "Bullwhip Effect",
-        "research_question": "Do order, inventory, and shortage pressures amplify upstream, and can an open profit objective reshape that amplification?",
+        "name": 'Bullwhip Effect',
+        "research_question": 'Do order, inventory, and shortage pressures amplify upstream, and can an open profit objective reshape that amplification?',
         "headline_metrics": [
             "mechanism_strength",
             "operating_performance",
@@ -37,14 +37,14 @@ FAMILY_METRIC_CONTRACTS: Dict[str, Dict[str, Any]] = {
             "total_cost",
         ],
         "expected_direction": {
-            "C1": "Fixed rules should produce an interpretable order-amplification or fulfillment-pressure trajectory.",
-            "C2": "A mechanism-constrained agent should express amplification through inventory, fulfillment, and replenishment decisions.",
-            "C3": "A profit-oriented agent may avoid unprofitable replenishment, smooth demand, or trade some service level for cash safety.",
+            "C1": 'Fixed rules should produce an interpretable order-amplification or fulfillment-pressure trajectory.',
+            "C2": 'A mechanism-constrained agent should express amplification through inventory, fulfillment, and replenishment decisions.',
+            "C3": 'A profit-oriented agent may avoid unprofitable replenishment, smooth demand, or trade some service level for cash safety.',
         },
     },
     "herding": {
-        "name": "Herding Effect",
-        "research_question": "Does peer visibility increase synchronized expansion and overproduction, and does a profit objective reduce unproductive following?",
+        "name": 'Herding Effect',
+        "research_question": 'Does peer visibility increase synchronized expansion and overproduction, and does a profit objective reduce unproductive following?',
         "headline_metrics": [
             "mechanism_strength",
             "operating_performance",
@@ -66,14 +66,14 @@ FAMILY_METRIC_CONTRACTS: Dict[str, Dict[str, Any]] = {
             "cash",
         ],
         "expected_direction": {
-            "C1": "A fixed peer-following rule should produce stronger synchronization in the peer-visible group than in the peer-hidden group.",
-            "C2": "A mechanism-constrained agent should synchronize plans more readily when aggregate peer signals are visible.",
-            "C3": "A profit-oriented agent may discount low-return peer signals and reduce synchronization or overproduction.",
+            "C1": 'A fixed peer-following rule should produce stronger synchronization in the peer-visible group than in the peer-hidden group.',
+            "C2": 'A mechanism-constrained agent should synchronize plans more readily when aggregate peer signals are visible.',
+            "C3": 'A profit-oriented agent may discount low-return peer signals and reduce synchronization or overproduction.',
         },
     },
     "commons": {
-        "name": "Tragedy of the Commons",
-        "research_question": "Does locally rational shared-resource acquisition cause resource degradation and financial feedback, and does a long-term profit objective encourage restraint?",
+        "name": 'Tragedy of the Commons',
+        "research_question": 'Does locally rational shared-resource acquisition cause resource degradation and financial feedback, and does a long-term profit objective encourage restraint?',
         "headline_metrics": [
             "mechanism_strength",
             "operating_performance",
@@ -94,16 +94,15 @@ FAMILY_METRIC_CONTRACTS: Dict[str, Dict[str, Any]] = {
             "inventory_pressure",
         ],
         "expected_direction": {
-            "C1": "A fixed local-return rule should validate the resource degradation and acquisition-loss equations.",
-            "C2": "A mechanism-constrained agent should exhibit over-acquisition, quality decline, or adverse cash feedback in the shared-resource setting.",
-            "C3": "A profit-oriented agent may reduce short-term acquisition, delay degradation, or improve long-term profit.",
+            "C1": 'A fixed local-return rule should validate the resource degradation and acquisition-loss equations.',
+            "C2": 'A mechanism-constrained agent should exhibit over-acquisition, quality decline, or adverse cash feedback in the shared-resource setting.',
+            "C3": 'A profit-oriented agent may reduce short-term acquisition, delay degradation, or improve long-term profit.',
         },
     },
     "cobweb": {
-        "name": "Cobweb Model",
+        "name": 'Cobweb Model',
         "research_question": (
-            "Do lagged price and output decisions produce the configured stability trajectory, and can a profit-oriented agent "
-            "improve operating stability under divergent pressure?"
+            'Do lagged prices and supply decisions produce the configured stability trajectory, and can profit-oriented agents improve operating stability under divergent pressure?'
         ),
         "headline_metrics": [
             "mechanism_strength",
@@ -133,14 +132,14 @@ FAMILY_METRIC_CONTRACTS: Dict[str, Dict[str, Any]] = {
             "action_failure_count",
         ],
         "expected_direction": {
-            "C1": "The theoretical supply function should reproduce convergent, approximately constant-amplitude, and bounded-divergent trajectories.",
-            "C2": "Under divergent pressure, a mechanism-constrained agent should form supply plans endogenously from price and cobweb signals.",
-            "C3": "Under divergent pressure, a profit-oriented agent should treat price as operating evidence and balance profit, cash, service, and production-adjustment risk.",
+            "C1": 'The theoretical supply function should reproduce convergent, approximately constant-amplitude, and bounded-divergent trajectories.',
+            "C2": 'Under divergent pressure, a mechanism-constrained agent should form supply plans endogenously from price and cobweb signals.',
+            "C3": 'Under divergent pressure, a profit-oriented agent should treat price as operating evidence and balance profit, cash, service, and production-adjustment risk.',
         },
     },
     "financial_constraint": {
-        "name": "Financial-Constraint Propagation",
-        "research_question": "Do cash, credit, and procurement failures propagate into the fulfillment chain?",
+        "name": 'Financial-Constraint Propagation',
+        "research_question": 'Do cash, credit, and procurement failures propagate into the fulfillment chain?',
         "headline_metrics": [
             "mechanism_strength",
             "operating_performance",
@@ -160,14 +159,14 @@ FAMILY_METRIC_CONTRACTS: Dict[str, Dict[str, Any]] = {
             "lost_sales_quantity",
         ],
         "expected_direction": {
-            "C1": "Fixed rules combined with budget constraints should trigger interpretable fulfillment blockage.",
-            "C2": "A mechanism-constrained agent should adjust procurement and sales under cash and credit constraints.",
-            "C3": "A profit-oriented agent may reduce order size, defer procurement, or rebalance its portfolio.",
+            "C1": 'Fixed rules combined with budget constraints should trigger interpretable fulfillment blockage.',
+            "C2": 'A mechanism-constrained agent should adjust procurement and sales under cash and credit constraints.',
+            "C3": 'A profit-oriented agent may reduce order size, defer procurement, or rebalance its portfolio.',
         },
     },
     "topology": {
-        "name": "Complex Topology",
-        "research_question": "Are trading edges, fulfillment, and settlement stable in chain, branching, and networked structures?",
+        "name": 'Complex Topology',
+        "research_question": 'Are trading edges, fulfillment, and settlement stable in chain, branching, and networked structures?',
         "headline_metrics": [
             "mechanism_strength",
             "operating_performance",
@@ -186,14 +185,14 @@ FAMILY_METRIC_CONTRACTS: Dict[str, Dict[str, Any]] = {
             "on_time_delivery_rate",
         ],
         "expected_direction": {
-            "C1": "Fixed routing should validate topological trading and settlement paths.",
-            "C2": "A mechanism-constrained agent should complete stable trades within the topology.",
-            "C3": "A profit-oriented agent may select more reliable or profitable trading edges.",
+            "C1": 'Fixed routing should validate topological trading and settlement paths.',
+            "C2": 'A mechanism-constrained agent should complete stable trades within the topology.',
+            "C3": 'A profit-oriented agent may select more reliable or profitable trading edges.',
         },
     },
     "single_enterprise": {
-        "name": "Single-Enterprise Decision Validation",
-        "research_question": "Can an agent identify an enterprise operating problem and take an appropriate corrective action?",
+        "name": 'Single-Enterprise Decision Validation',
+        "research_question": 'Can an agent identify an enterprise operating problem and take an appropriate corrective action?',
         "headline_metrics": [
             "diagnostic_accuracy",
             "corrective_action_quality",
@@ -214,14 +213,13 @@ FAMILY_METRIC_CONTRACTS: Dict[str, Dict[str, Any]] = {
             "fill_rate",
         ],
         "expected_direction": {
-            "S0": "The agent should identify the responsible department, avoid discouraged actions, and improve case-specific indicators during the takeover window.",
+            "S0": 'The agent should identify the responsible department, avoid discouraged actions, and improve case-specific indicators during the takeover window.',
         },
     },
     "long_horizon_evolution": {
-        "name": "Long-Horizon Multi-Enterprise Evolution",
+        "name": 'Long-Horizon Multi-Enterprise Evolution',
         "research_question": (
-            "Can enterprises in a four-tier supply chain detect phased changes in external cost, trade, and demand "
-            "while maintaining profit, cash, and fulfillment resilience without unsupported demand amplification?"
+            'Can four supply-chain tiers respond to staged cost, trade and demand changes while maintaining profit, cash and service without unsupported demand amplification?'
         ),
         "headline_metrics": [
             "change_detection_and_response",
@@ -253,14 +251,13 @@ FAMILY_METRIC_CONTRACTS: Dict[str, Dict[str, Any]] = {
         ],
         "expected_direction": {
             "E1": (
-                "The agent should adjust procurement, production, inventory, and sales after each observable environmental change, "
-                "shorten operating-metric recovery time, and avoid unsupported upstream amplification of stable end demand."
+                'Respond to observable environment changes through procurement, production, inventory and sales, shorten recovery and avoid amplifying stable terminal demand without evidence.'
             ),
         },
     },
     "general": {
-        "name": "General Multi-Enterprise Run",
-        "research_question": "Does the run contain the annotations and quality information required for evaluation?",
+        "name": 'General Multi-Enterprise Run',
+        "research_question": 'Does the run contain the annotations and quality information required for evaluation?',
         "headline_metrics": [
             "operating_performance",
             "decision_quality",
@@ -289,7 +286,7 @@ def infer_experiment_family(scenario_id: str) -> str:
     value = str(scenario_id or "").lower()
     if value == "long_horizon_evolution" or "long_horizon_evolution" in value:
         return "long_horizon_evolution"
-    if value.startswith("single_case_"):
+    if value.startswith("single_case_") or value.startswith("firm_ablation_fd"):
         return "single_enterprise"
     if "herding" in value:
         return "herding"
@@ -301,7 +298,7 @@ def infer_experiment_family(scenario_id: str) -> str:
         return "financial_constraint"
     if "architecture" in value or "topology" in value:
         return "topology"
-    if "beer_game" in value or value.startswith("baseline_"):
+    if "beer_game" in value or value.startswith("baseline_") or value.startswith("firm_ablation_bullwhip_"):
         return "bullwhip"
     return "general"
 
@@ -323,6 +320,15 @@ def build_experiment_metric_contract(
         experiment_group,
         expected_direction.get("C2", ""),
     )
+    if experiment_group in {"MA", "SA", "NA", "NC"}:
+        group_expected_direction = 'Compare organizational architectures under shared facts and execution rules; retain failures and retries without assuming an MA or SA winner.'
+        family_contract["research_question"] = 'How do enterprise diagnosis, shared coordination and functional organization affect decisions, operating outcomes and runtime overhead?'
+        family_contract["secondary_metrics"] += [
+            "phase_availability_rate", "first_attempt_valid_tasks", "attempt_count", "timeout_attempts",
+            "business_rejections", "unresolved_rejections", "technical_no_submission_phases",
+        ]
+        if experiment_group == "SA" and experiment_design.get("baseline_group") == "C3":
+            group_expected_direction = 'Compare against organizational enterprises under the same C3 operating regime; retain failures and retries without assuming an MA or SA winner.'
     return {
         "schema_version": EXPERIMENT_METRIC_CONTRACT_SCHEMA_VERSION,
         "phase": "phase2_expected_metrics",
@@ -331,6 +337,10 @@ def build_experiment_metric_contract(
         "decision_regime": experiment_design.get("decision_regime"),
         "agent_objective_profile": experiment_design.get("agent_objective_profile"),
         "constraint_level": experiment_design.get("constraint_level"),
+        "enterprise_architecture": experiment_design.get("enterprise_architecture"),
+        "baseline_group": experiment_design.get("baseline_group"),
+        "baseline_run_id": experiment_design.get("baseline_run_id"),
+        "source_scenario_id": experiment_design.get("source_scenario_id"),
         "family": family,
         **family_contract,
         "expected_direction_for_group": group_expected_direction,
@@ -339,12 +349,17 @@ def build_experiment_metric_contract(
             "round_integrity_ok",
             "decision_regime_labeled",
             "config_snapshot_available",
-        ],
-        "group_specific_gates": _group_specific_gates(experiment_group),
+        ] + (["architecture_decision_quality_ok"] if experiment_group in {"MA", "SA", "NA", "NC"} else []),
+        "group_specific_gates": _group_specific_gates(experiment_group) + (
+            ["profit_objective_enabled", "objective_function_available", "baseline_regime_matched"]
+            if experiment_group == "SA" and experiment_design.get("baseline_group") == "C3" else []
+        ),
     }
 
 
 def _group_specific_gates(experiment_group: str) -> List[str]:
+    if experiment_group in {"MA", "SA", "NA", "NC"}:
+        return ["architecture_protocol_labeled", "phase_records_complete", "failures_retained_in_evaluation"]
     if experiment_group == "C1":
         return ["scripted_rule_policy_enabled", "agent_open_reasoning_disabled"]
     if experiment_group == "C2":

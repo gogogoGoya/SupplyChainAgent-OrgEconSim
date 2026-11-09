@@ -110,7 +110,9 @@ class OperationsWorker:
             )
 
         try:
-            result = self.runner(running, checkpoint) or {}
+            result = self.runner(running, checkpoint)
+            if not isinstance(result, dict) or not result:
+                raise RuntimeError("Runner returned no execution result")
         except Exception as exc:
             latest = self.service.get_job(job_id)
             failed = self.service.mark_failed(
@@ -139,7 +141,14 @@ class OperationsWorker:
             if result.get("last_complete_round") is not None
             else latest.get("last_complete_round")
         )
-        if latest.get("status") == "stop_requested" or result.get("status") == "stopped":
+        result_status = result.get("status", "completed")
+        if result_status == "failed" or result_status not in {"completed", "stopped", "stopped_by_guard"}:
+            finished = self.service.mark_failed(
+                job_id, completed_steps=completed_steps,
+                last_complete_round=last_complete_round,
+                error=result.get("finish_reason") or result.get("error") or f"Runner ended with status {result_status}",
+            )
+        elif latest.get("status") == "stop_requested" or result_status in {"stopped", "stopped_by_guard"}:
             finished = self.service.mark_stopped(
                 job_id,
                 completed_steps=completed_steps,
